@@ -1,0 +1,628 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <div class="breadcrumb">
+            <span>Analytics Overview</span>
+        </div>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="stats-grid">
+    <div class="stat-card accent">
+        <div class="stat-icon accent">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+        </div>
+        <div class="stat-value">{{ stats.users }}</div>
+        <div class="stat-label">Total Users</div>
+        {% if user_growth_percent != 0 %}
+        <span class="stat-trend {% if user_growth_percent > 0 %}up{% else %}down{% endif %}">
+            {% if user_growth_percent > 0 %}+{% endif %}{{ user_growth_percent }}% this month
+        </span>
+        {% endif %}
+    </div>
+
+    <div class="stat-card success">
+        <div class="stat-icon success">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+        </div>
+        <div class="stat-value">{{ stats.students }}</div>
+        <div class="stat-label">Students</div>
+        {% if student_growth_percent != 0 %}
+        <span class="stat-trend {% if student_growth_percent > 0 %}up{% else %}down{% endif %}">
+            {% if student_growth_percent > 0 %}+{% endif %}{{ student_growth_percent }}% this month
+        </span>
+        {% endif %}
+    </div>
+
+    <div class="stat-card warning">
+        <div class="stat-icon warning">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+        </div>
+        <div class="stat-value">{{ stats.gpa_calculations }}</div>
+        <div class="stat-label">GPA Calculations</div>
+        {% if gpa_growth_percent != 0 %}
+        <span class="stat-trend {% if gpa_growth_percent > 0 %}up{% else %}down{% endif %}">
+            {% if gpa_growth_percent > 0 %}+{% endif %}{{ gpa_growth_percent }}% this month
+        </span>
+        {% endif %}
+    </div>
+
+    <div class="stat-card danger">
+        <div class="stat-icon danger">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+            </svg>
+        </div>
+        <div class="stat-value">{{ stats.logins_today }}</div>
+        <div class="stat-label">Logins Today</div>
+        {% if login_growth_percent != 0 %}
+        <span class="stat-trend {% if login_growth_percent > 0 %}up{% else %}down{% endif %}">
+            {% if login_growth_percent > 0 %}+{% endif %}{{ login_growth_percent }}% vs last week
+        </span>
+        {% endif %}
+    </div>
+
+    <div class="stat-card info">
+        <div class="stat-icon accent">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+            </svg>
+        </div>
+        <div class="stat-value">{{ stats.universities }}</div>
+        <div class="stat-label">Universities</div>
+    </div>
+</div>
+
+<!-- Charts Row 1: User Growth & GPA Usage -->
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">User Growth (Last 30 Days)</h3>
+            <span class="badge badge-primary">{{ stats.users }} total</span>
+        </div>
+        <div class="chart-container">
+            <canvas id="userGrowthChart"></canvas>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">GPA Calculator Usage (Last 30 Days)</h3>
+            <span class="badge badge-warning">{{ stats.gpa_calculations }} total</span>
+        </div>
+        <div class="chart-container">
+            <canvas id="gpaUsageChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row 2: Students Distribution -->
+<div class="grid-2" style="margin-top: 0;">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Students by College</h3>
+        </div>
+        <div class="chart-container">
+            <canvas id="studentsByCollegeChart"></canvas>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Top Programs by Students</h3>
+        </div>
+        <div class="chart-container" style="height: 300px;">
+            <canvas id="studentsByProgramChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row 3: GPA Usage Analytics -->
+<div class="grid-2" style="margin-top: 0;">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">GPA Calculator Usage by Program</h3>
+        </div>
+        <div class="chart-container" style="height: 300px;">
+            <canvas id="gpaByProgramChart"></canvas>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">GPA Calculator Usage by Academic Year</h3>
+        </div>
+        <div class="chart-container" style="height: 300px;">
+            <canvas id="gpaByYearChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Login Activity Chart -->
+<div class="card" style="margin-top: 0;">
+    <div class="card-header">
+        <h3 class="card-title">Login Activity (Last 30 Days)</h3>
+        <span class="badge badge-success">Tracking site performance</span>
+    </div>
+    <div class="chart-container" style="height: 280px;">
+        <canvas id="loginActivityChart"></canvas>
+    </div>
+</div>
+
+<!-- Recent Activity Grid -->
+<div class="grid-2" style="margin-top: 0;">
+    <!-- Recent Users -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Recent Registrations</h3>
+            <a href="{% url 'dashboard-students' %}" class="btn btn-secondary btn-sm">View All</a>
+        </div>
+        {% if recent_users %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Joined</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in recent_users %}
+                    <tr>
+                        <td>
+                            <strong>{{ user.display_name }}</strong>
+                            <br><small style="color: var(--text-muted);">{{ user.email }}</small>
+                        </td>
+                        <td>{{ user.date_joined|date:"M d, H:i" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No recent registrations</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Recent Logins -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Recent Login Activity</h3>
+        </div>
+        {% if recent_logins %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Type</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for login in recent_logins %}
+                    <tr>
+                        <td>
+                            <strong>{{ login.user.display_name }}</strong>
+                            <br><small style="color: var(--text-muted);">{{ login.user.email }}</small>
+                        </td>
+                        <td><span class="badge badge-primary">{{ login.login_type }}</span></td>
+                        <td>{{ login.login_time|date:"M d, H:i" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No login activity recorded yet</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="card" style="margin-top: 0;">
+    <div class="card-header">
+        <h3 class="card-title">Quick Actions</h3>
+    </div>
+    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+        <a href="{% url 'dashboard-university-create' %}" class="btn btn-primary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add University
+        </a>
+        <a href="{% url 'dashboard-program-create' %}" class="btn btn-secondary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Program
+        </a>
+        <a href="{% url 'dashboard-course-create' %}" class="btn btn-secondary">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Course
+        </a>
+        <a href="{% url 'dashboard-import' %}" class="btn btn-success">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Import Data
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    // Get theme for chart colors
+    function getChartColors() {
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        return {
+            text: isDark ? '#a0a0b5' : '#4a5568',
+            grid: isDark ? '#2a2a40' : '#e1e8ed',
+            accent: '#00bfff',
+            accentLight: isDark ? 'rgba(0, 191, 255, 0.2)' : 'rgba(0, 191, 255, 0.15)',
+            success: '#00d9a5',
+            successLight: isDark ? 'rgba(0, 217, 165, 0.2)' : 'rgba(0, 217, 165, 0.15)',
+            warning: '#ffc107',
+            warningLight: isDark ? 'rgba(255, 193, 7, 0.2)' : 'rgba(255, 193, 7, 0.15)',
+            danger: '#ff4757',
+            dangerLight: isDark ? 'rgba(255, 71, 87, 0.2)' : 'rgba(255, 71, 87, 0.15)',
+            purple: '#9b59b6',
+            purpleLight: isDark ? 'rgba(155, 89, 182, 0.2)' : 'rgba(155, 89, 182, 0.15)',
+        };
+    }
+
+    // Chart.js defaults
+    const colors = getChartColors();
+    Chart.defaults.color = colors.text;
+    Chart.defaults.borderColor = colors.grid;
+    Chart.defaults.font.family = "'Segoe UI', sans-serif";
+
+    // Data from Django
+    const userGrowthData = {{ user_growth_data|safe }};
+    const gpaUsageData = {{ gpa_usage_data|safe }};
+    const gpaByProgram = {{ gpa_by_program|safe }};
+    const gpaByYear = {{ gpa_by_year|safe }};
+    const studentsByCollege = {{ students_by_college|safe }};
+    const studentsByProgram = {{ students_by_program|safe }};
+    const loginActivityData = {{ login_activity_data|safe }};
+
+    // 1. User Growth Chart (Line/Area)
+    const userGrowthCtx = document.getElementById('userGrowthChart').getContext('2d');
+    new Chart(userGrowthCtx, {
+        type: 'line',
+        data: {
+            labels: userGrowthData.map(d => d.date),
+            datasets: [{
+                label: 'New Users',
+                data: userGrowthData.map(d => d.count),
+                borderColor: colors.accent,
+                backgroundColor: colors.accentLight,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 2,
+                pointHoverRadius: 5,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: { stepSize: 1 },
+                    grid: { color: colors.grid }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: {
+                        maxTicksLimit: 10,
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+
+    // 2. GPA Usage Chart (Line)
+    const gpaUsageCtx = document.getElementById('gpaUsageChart').getContext('2d');
+    new Chart(gpaUsageCtx, {
+        type: 'line',
+        data: {
+            labels: gpaUsageData.map(d => d.date),
+            datasets: [{
+                label: 'Calculations',
+                data: gpaUsageData.map(d => d.count),
+                borderColor: colors.warning,
+                backgroundColor: colors.warningLight,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 2,
+                pointHoverRadius: 5,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: { stepSize: 1 },
+                    grid: { color: colors.grid }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: {
+                        maxTicksLimit: 10,
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+
+    // 3. Students by College (Doughnut)
+    const collegeCtx = document.getElementById('studentsByCollegeChart').getContext('2d');
+    if (studentsByCollege.length > 0) {
+        new Chart(collegeCtx, {
+            type: 'doughnut',
+            data: {
+                labels: studentsByCollege.map(d => d.name.length > 20 ? d.name.substring(0, 20) + '...' : d.name),
+                datasets: [{
+                    data: studentsByCollege.map(d => d.student_count),
+                    backgroundColor: [
+                        'rgba(0, 191, 255, 0.8)',
+                        'rgba(0, 217, 165, 0.8)',
+                        'rgba(255, 193, 7, 0.8)',
+                        'rgba(255, 71, 87, 0.8)',
+                        'rgba(155, 89, 182, 0.8)',
+                        'rgba(52, 152, 219, 0.8)',
+                        'rgba(241, 196, 15, 0.8)',
+                        'rgba(230, 126, 34, 0.8)',
+                        'rgba(46, 204, 113, 0.8)',
+                        'rgba(149, 165, 166, 0.8)',
+                    ],
+                    borderWidth: 0,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: {
+                            boxWidth: 12,
+                            padding: 8,
+                            font: { size: 11 }
+                        }
+                    }
+                },
+                cutout: '60%'
+            }
+        });
+    } else {
+        collegeCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No student data</p></div>';
+    }
+
+    // 4. Students by Program (Vertical Bar with slanted labels)
+    const programCtx = document.getElementById('studentsByProgramChart').getContext('2d');
+    if (studentsByProgram.length > 0) {
+        new Chart(programCtx, {
+            type: 'bar',
+            data: {
+                labels: studentsByProgram.slice(0, 7).map(d => d.name.length > 20 ? d.name.substring(0, 20) + '...' : d.name),
+                datasets: [{
+                    label: 'Students',
+                    data: studentsByProgram.slice(0, 7).map(d => d.student_count),
+                    backgroundColor: colors.accentLight,
+                    borderColor: colors.accent,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: colors.grid },
+                        ticks: { stepSize: 1 }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: {
+                            font: { size: 9 },
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        programCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No program data</p></div>';
+    }
+
+    // 5. GPA by Program (Vertical Bar with slanted labels - top 7)
+    const gpaProgramCtx = document.getElementById('gpaByProgramChart').getContext('2d');
+    if (gpaByProgram.length > 0) {
+        new Chart(gpaProgramCtx, {
+            type: 'bar',
+            data: {
+                labels: gpaByProgram.slice(0, 7).map(d => d.name.length > 20 ? d.name.substring(0, 20) + '...' : d.name),
+                datasets: [{
+                    label: 'Calculations',
+                    data: gpaByProgram.slice(0, 7).map(d => d.count),
+                    backgroundColor: colors.warningLight,
+                    borderColor: colors.warning,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: colors.grid },
+                        ticks: { stepSize: 1 }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: {
+                            font: { size: 9 },
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        gpaProgramCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No GPA data by program</p></div>';
+    }
+
+    // 6. GPA by Academic Year (Bar Chart)
+    const gpaYearCtx = document.getElementById('gpaByYearChart').getContext('2d');
+    if (gpaByYear.length > 0) {
+        new Chart(gpaYearCtx, {
+            type: 'bar',
+            data: {
+                labels: gpaByYear.map(d => 'Year ' + d.year),
+                datasets: [{
+                    label: 'Calculations',
+                    data: gpaByYear.map(d => d.count),
+                    backgroundColor: [
+                        'rgba(0, 191, 255, 0.7)',
+                        'rgba(0, 217, 165, 0.7)',
+                        'rgba(255, 193, 7, 0.7)',
+                        'rgba(155, 89, 182, 0.7)',
+                    ],
+                    borderColor: [
+                        'rgba(0, 191, 255, 1)',
+                        'rgba(0, 217, 165, 1)',
+                        'rgba(255, 193, 7, 1)',
+                        'rgba(155, 89, 182, 1)',
+                    ],
+                    borderWidth: 1,
+                    borderRadius: 6,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: colors.grid },
+                        ticks: { stepSize: 1 }
+                    },
+                    x: {
+                        grid: { display: false }
+                    }
+                }
+            }
+        });
+    } else {
+        gpaYearCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No GPA data by academic year</p></div>';
+    }
+
+    // 7. Login Activity (Area Chart)
+    const loginCtx = document.getElementById('loginActivityChart').getContext('2d');
+    new Chart(loginCtx, {
+        type: 'line',
+        data: {
+            labels: loginActivityData.map(d => d.date),
+            datasets: [{
+                label: 'Unique Users',
+                data: loginActivityData.map(d => d.unique_users),
+                borderColor: colors.success,
+                backgroundColor: colors.successLight,
+                fill: true,
+                tension: 0.4,
+                pointRadius: 2,
+            }, {
+                label: 'Total Logins',
+                data: loginActivityData.map(d => d.total_logins),
+                borderColor: colors.accent,
+                backgroundColor: 'transparent',
+                borderDash: [5, 5],
+                tension: 0.4,
+                pointRadius: 0,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    position: 'top',
+                    labels: {
+                        boxWidth: 12,
+                        padding: 15,
+                        font: { size: 11 }
+                    }
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: colors.grid }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: {
+                        maxTicksLimit: 10,
+                        font: { size: 10 }
+                    }
+                }
+            }
+        }
+    });
+
+    // Update charts on theme change
+    const originalToggleTheme = window.toggleTheme;
+    window.toggleTheme = function() {
+        originalToggleTheme();
+        // Reload page to update chart colors (simple approach)
+        setTimeout(() => location.reload(), 100);
+    };
+</script>
+{% endblock %}

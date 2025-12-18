@@ -1,0 +1,131 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Student Details{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Student Details</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <a href="{% url 'dashboard-students' %}">Students</a>
+            <span>/</span>
+            <span>{{ student.user.display_name }}</span>
+        </div>
+    </div>
+    <a href="{% url 'dashboard-students' %}" class="btn btn-secondary">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+        </svg>
+        Back to Students
+    </a>
+</div>
+
+<div class="grid-2">
+    <!-- Personal Information -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Personal Information</h3>
+        </div>
+        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+            <div style="width: 64px; height: 64px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-hover)); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: bold;">
+                {{ student.user.display_name|slice:":1"|upper }}
+            </div>
+            <div>
+                <h3 style="margin-bottom: 0.25rem;">{{ student.user.display_name }}</h3>
+                <p style="color: var(--text-muted);">{{ student.user.email }}</p>
+            </div>
+        </div>
+        
+        <table style="width: 100%;">
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Gender</td>
+                <td style="padding: 0.5rem 0;">{{ student.user.gender|default:"Not specified"|title }}</td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Phone</td>
+                <td style="padding: 0.5rem 0;">{{ student.user.phone_number|default:"Not provided" }}</td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Account Created</td>
+                <td style="padding: 0.5rem 0;">{{ student.user.date_joined|date:"M d, Y H:i" }}</td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Last Login</td>
+                <td style="padding: 0.5rem 0;">{{ student.user.last_login|date:"M d, Y H:i"|default:"Never" }}</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- Academic Information -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Academic Information</h3>
+        </div>
+        <table style="width: 100%;">
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">University</td>
+                <td style="padding: 0.5rem 0;"><strong>{{ student.university.name }}</strong></td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">College</td>
+                <td style="padding: 0.5rem 0;">{{ student.college.name }}</td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Program</td>
+                <td style="padding: 0.5rem 0;">{{ student.program.name }}</td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Duration</td>
+                <td style="padding: 0.5rem 0;">{{ student.program.duration }} years</td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Current Year</td>
+                <td style="padding: 0.5rem 0;"><span class="badge badge-primary">Year {{ student.year }}</span></td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Current Semester</td>
+                <td style="padding: 0.5rem 0;"><span class="badge badge-success">Semester {{ student.semester }}</span></td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Has Courses</td>
+                <td style="padding: 0.5rem 0;">
+                    {% if student.has_courses %}
+                    <span class="badge badge-success">Yes</span>
+                    {% else %}
+                    <span class="badge badge-warning">No</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Profile Created</td>
+                <td style="padding: 0.5rem 0;">{{ student.created_at|date:"M d, Y H:i" }}</td>
+            </tr>
+        </table>
+    </div>
+</div>
+
+<!-- Quick Links -->
+<div class="card" style="margin-top: 1.5rem;">
+    <div class="card-header">
+        <h3 class="card-title">Related Data</h3>
+    </div>
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="{% url 'dashboard-universities' %}?search={{ student.university.name|urlencode }}" class="btn btn-secondary">
+            View University
+        </a>
+        <a href="{% url 'dashboard-colleges' %}?search={{ student.college.name|urlencode }}" class="btn btn-secondary">
+            View College
+        </a>
+        <a href="{% url 'dashboard-programs' %}?search={{ student.program.name|urlencode }}" class="btn btn-secondary">
+            View Program
+        </a>
+        <a href="{% url 'dashboard-courses' %}?program={{ student.program.id }}" class="btn btn-secondary">
+            View Courses
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+

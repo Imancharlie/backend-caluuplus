@@ -1,0 +1,128 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:chatbot_knowledgedocument_changelist' %}">Knowledge Documents</a>
+&rsaquo; Bulk Import
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>Bulk Import Knowledge Documents</h1>
+
+<div class="module">
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        
+        <fieldset class="module aligned">
+            <h2>Import Settings</h2>
+            
+            <div class="form-row">
+                <div>
+                    <label for="file_type">File Type:</label>
+                    <select name="file_type" id="file_type" required>
+                        <option value="csv">CSV</option>
+                        <option value="json">JSON</option>
+                    </select>
+                    <p class="help">Select the format of your import file</p>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div>
+                    <label for="university">University (Optional):</label>
+                    <select name="university" id="university">
+                        <option value="">All Universities (General)</option>
+                        {% for university in universities %}
+                        <option value="{{ university.id }}">{{ university.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <p class="help">Leave blank for general knowledge applicable to all universities</p>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div>
+                    <label for="file">Import File:</label>
+                    <input type="file" name="file" id="file" accept=".csv,.json" required>
+                    <p class="help">
+                        <strong>CSV Format:</strong> title,content,category,tags,priority<br>
+                        <strong>JSON Format:</strong> Array of objects with title, content, category, tags, priority fields
+                    </p>
+                </div>
+            </div>
+        </fieldset>
+        
+        <div class="submit-row">
+            <input type="submit" value="Import Documents" class="default">
+            <a href="{% url 'admin:chatbot_knowledgedocument_changelist' %}" class="button">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<div class="module">
+    <h2>File Format Examples</h2>
+    
+    <h3>CSV Format:</h3>
+    <pre style="background: #f5f5f5; padding: 10px; border: 1px solid #ddd;">
+title,content,category,tags,priority
+How to Postpone Studies,Step 1: Contact your advisor... Step 2: Fill form...,procedure,postpone,defer,withdraw,8
+Academic Integrity Policy,Students must maintain academic honesty...,regulation,plagiarism,cheating,integrity,9
+    </pre>
+    
+    <h3>JSON Format:</h3>
+    <pre style="background: #f5f5f5; padding: 10px; border: 1px solid #ddd;">
+[
+  {
+    "title": "How to Postpone Studies",
+    "content": "Step 1: Contact your advisor... Step 2: Fill form...",
+    "category": "procedure",
+    "tags": "postpone,defer,withdraw",
+    "priority": 8
+  },
+  {
+    "title": "Academic Integrity Policy",
+    "content": "Students must maintain academic honesty...",
+    "category": "regulation",
+    "tags": "plagiarism,cheating,integrity",
+    "priority": 9
+  }
+]
+    </pre>
+    
+    <h3>Available Categories:</h3>
+    <ul>
+        <li><strong>faq</strong> - Frequently Asked Questions</li>
+        <li><strong>policy</strong> - University Policies</li>
+        <li><strong>guide</strong> - General Guides</li>
+        <li><strong>schedule</strong> - Schedule Information</li>
+        <li><strong>regulation</strong> - Regulations and Rules</li>
+        <li><strong>procedure</strong> - Step-by-step Procedures</li>
+        <li><strong>calendar</strong> - Calendar Events</li>
+        <li><strong>navigation</strong> - Navigation Help</li>
+        <li><strong>academic_advice</strong> - Academic Advice</li>
+        <li><strong>program_info</strong> - Program Information</li>
+    </ul>
+</div>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

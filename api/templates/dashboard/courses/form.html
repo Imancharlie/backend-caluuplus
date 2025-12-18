@@ -1,0 +1,97 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}{{ form_title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ form_title }}</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <a href="{% url 'dashboard-courses' %}">Courses</a>
+            <span>/</span>
+            <span>{{ form_title }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="max-width: 700px;">
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label class="form-label" for="program">Program *</label>
+            <select id="program" name="program" class="form-control" required>
+                <option value="">Select Program</option>
+                {% for prog in programs %}
+                <option value="{{ prog.id }}" {% if program_id == prog.id|stringformat:'s' %}selected{% endif %}>
+                    {{ prog.name }} ({{ prog.college.university.name }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="grid-2">
+            <div class="form-group">
+                <label class="form-label" for="code">Course Code *</label>
+                <input type="text" id="code" name="code" class="form-control" 
+                       value="{{ code|default:'' }}" placeholder="e.g., CS101" required>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="credits">Credits *</label>
+                <input type="number" id="credits" name="credits" class="form-control" 
+                       value="{{ credits|default:3 }}" min="1" max="20" required>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="name">Course Name *</label>
+            <input type="text" id="name" name="name" class="form-control" 
+                   value="{{ name|default:'' }}" placeholder="e.g., Introduction to Computer Science" required>
+        </div>
+
+        <div class="grid-2">
+            <div class="form-group">
+                <label class="form-label" for="year">Year *</label>
+                <select id="year" name="year" class="form-control" required>
+                    <option value="">Select Year</option>
+                    <option value="1" {% if year == 1 %}selected{% endif %}>Year 1</option>
+                    <option value="2" {% if year == 2 %}selected{% endif %}>Year 2</option>
+                    <option value="3" {% if year == 3 %}selected{% endif %}>Year 3</option>
+                    <option value="4" {% if year == 4 %}selected{% endif %}>Year 4</option>
+                    <option value="5" {% if year == 5 %}selected{% endif %}>Year 5</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label" for="semester">Semester *</label>
+                <select id="semester" name="semester" class="form-control" required>
+                    <option value="">Select Semester</option>
+                    <option value="1" {% if semester == 1 %}selected{% endif %}>Semester 1</option>
+                    <option value="2" {% if semester == 2 %}selected{% endif %}>Semester 2</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="type">Course Type *</label>
+            <select id="type" name="type" class="form-control" required>
+                <option value="">Select Type</option>
+                <option value="core" {% if type == 'core' %}selected{% endif %}>Core (Compulsory)</option>
+                <option value="elective" {% if type == 'elective' %}selected{% endif %}>Elective (Optional)</option>
+            </select>
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <button type="submit" class="btn btn-primary">
+                {% if course %}Update{% else %}Create{% endif %} Course
+            </button>
+            <a href="{% url 'dashboard-courses' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+

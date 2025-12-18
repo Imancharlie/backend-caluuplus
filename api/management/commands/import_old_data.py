@@ -8,10 +8,10 @@ import decimal
 
 
 class Command(BaseCommand):
-    help = 'Import legacy data from old-data.json and upsert into University, College, Program, and Course tables.'
+    help = 'Import legacy data from old-dat.json and upsert into University, College, Program, and Course tables.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--path', type=str, default='old-data.json', help='Path to old-data.json file')
+        parser.add_argument('--path', type=str, default='old-dat.json', help='Path to old-dat.json file')
         parser.add_argument('--university', type=str, default='University of Dar es Salaam', help='University name to import')
         parser.add_argument('--country', type=str, default='Tanzania', help='Country for the university record if created')
 

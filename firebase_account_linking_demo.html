@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase Account Linking Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        .scenario { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .new-user { background-color: #d4edda; border-color: #c3e6cb; }
+        .existing-user { background-color: #fff3cd; border-color: #ffeaa7; }
+        .account-link { background-color: #d1ecf1; border-color: #bee5eb; }
+        .flow-diagram { background: #f8f9fa; padding: 15px; margin: 15px 0; border-radius: 5px; }
+        .step { margin: 10px 0; padding: 8px; background: white; border-radius: 3px; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+        code { background: #e9ecef; padding: 2px 4px; border-radius: 2px; }
+    </style>
+</head>
+<body>
+    <h1>🔗 Firebase Account Linking - Seamless User Experience</h1>
+
+    <div class="flow-diagram">
+        <h2>🔄 Complete Authentication Flow</h2>
+        <div class="step">
+            <strong>Step 1:</strong> User clicks "Sign in with Google"
+        </div>
+        <div class="step">
+            <strong>Step 2:</strong> Firebase Google popup appears
+        </div>
+        <div class="step">
+            <strong>Step 3:</strong> User selects Google account
+        </div>
+        <div class="step">
+            <strong>Step 4:</strong> Firebase returns ID token
+        </div>
+        <div class="step">
+            <strong>Step 5:</strong> Django backend processes token
+        </div>
+        <div class="step">
+            <strong>Step 6:</strong> Smart user matching logic runs
+        </div>
+        <div class="step">
+            <strong>Step 7:</strong> User gets JWT tokens and proceeds
+        </div>
+    </div>
+
+    <div class="scenario new-user">
+        <h2>🆕 Scenario 1: Completely New User</h2>
+        <p><strong>User Experience:</strong> User signs in with Google for the first time</p>
+
+        <h3>What Happens:</h3>
+        <ol>
+            <li>No existing user found with this Firebase UID</li>
+            <li>No existing user found with this email address</li>
+            <li>New user account is created with Google profile data</li>
+            <li>User gets welcome message and proceeds to onboarding</li>
+        </ol>
+
+        <h3>Response:</h3>
+        <pre><code>{
+    "user": {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "username": "firebase-uid-12345",
+        "email": "newuser@gmail.com",
+        "display_name": "New User",
+        "profile_picture": "https://profile-photo-url",
+        "firebase_uid": "firebase-uid-12345",
+        "is_new_user": true,
+        "account_linked": false
+    },
+    "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "refresh": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "message": "Welcome! Successfully authenticated with Google."
+}</code></pre>
+
+        <p><strong>User sees:</strong> "Welcome! Successfully authenticated with Google."</p>
+    </div>
+
+    <div class="scenario account-link">
+        <h2>🔗 Scenario 2: Existing User Links Google Account</h2>
+        <p><strong>User Experience:</strong> User had an account (email/password) and now links Google</p>
+
+        <h3>What Happens:</h3>
+        <ol>
+            <li>User already exists with this email address</li>
+            <li>User's account gets linked to Firebase (firebase_uid added)</li>
+            <li>User profile gets updated with Google data (name, picture)</li>
+            <li>User proceeds with existing account + Google benefits</li>
+        </ol>
+
+        <h3>Response:</h3>
+        <pre><code>{
+    "user": {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "username": "existing-user",
+        "email": "existing@gmail.com",
+        "display_name": "Updated Name",
+        "profile_picture": "https://new-profile-photo-url",
+        "firebase_uid": "firebase-uid-12345",
+        "is_new_user": false,
+        "account_linked": true
+    },
+    "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "refresh": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "message": "Welcome back! Successfully authenticated with Google."
+}</code></pre>
+
+        <p><strong>User sees:</strong> "Welcome back! Successfully authenticated with Google."</p>
+        <p><strong>Behind the scenes:</strong> Account seamlessly linked, no disruption to user experience</p>
+    </div>
+
+    <div class="scenario existing-user">
+        <h2>🔄 Scenario 3: Returning Firebase User</h2>
+        <p><strong>User Experience:</strong> User has previously signed in with Google</p>
+
+        <h3>What Happens:</h3>
+        <ol>
+            <li>User found by Firebase UID (has logged in with Google before)</li>
+            <li>User profile updated with latest Google data</li>
+            <li>User proceeds with existing Firebase-linked account</li>
+        </ol>
+
+        <h3>Response:</h3>
+        <pre><code>{
+    "user": {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "username": "firebase-uid-12345",
+        "email": "returning@gmail.com",
+        "display_name": "Returning User",
+        "profile_picture": "https://updated-profile-photo-url",
+        "firebase_uid": "firebase-uid-12345",
+        "is_new_user": false,
+        "account_linked": false
+    },
+    "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "refresh": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "message": "Welcome back! Successfully authenticated with Google."
+}</code></pre>
+
+        <p><strong>User sees:</strong> "Welcome back! Successfully authenticated with Google."</p>
+    </div>
+
+    <div class="flow-diagram">
+        <h2>🎯 Smart Matching Algorithm</h2>
+        <div class="step">
+            <strong>1. Firebase UID Match:</strong> Check if user has Firebase UID
+        </div>
+        <div class="step">
+            <strong>2. Email Match:</strong> Find existing user by email address
+        </div>
+        <div class="step">
+            <strong>3. Account Linking:</strong> Link existing account to Firebase
+        </div>
+        <div class="step">
+            <strong>4. New User Creation:</strong> Create new account only if no matches found
+        </div>
+        <div class="step">
+            <strong>5. Profile Sync:</strong> Update user data from Google profile
+        </div>
+        <div class="step">
+            <strong>6. Token Generation:</strong> Provide JWT tokens for API access
+        </div>
+    </div>
+
+    <div style="background: #d4edda; padding: 15px; border-radius: 5px; margin: 20px 0;">
+        <h2>✅ Perfect User Experience</h2>
+        <ul>
+            <li><strong>No Unique Constraint Errors:</strong> Smart matching prevents conflicts</li>
+            <li><strong>Seamless Account Linking:</strong> Existing users can link Google accounts</li>
+            <li><strong>Profile Data Sync:</strong> Google profile data always up-to-date</li>
+            <li><strong>No User Confusion:</strong> Same experience regardless of account status</li>
+            <li><strong>Backward Compatible:</strong> Works with existing user accounts</li>
+        </ul>
+    </div>
+
+    <div style="background: #f8d7da; padding: 15px; border-radius: 5px; margin: 20px 0;">
+        <h2>🚨 What Users Will Never See:</h2>
+        <ul>
+            <li>❌ "Username already exists" errors</li>
+            <li>❌ Database constraint violations</li>
+            <li>❌ Account creation failures</li>
+            <li>❌ Confusing error messages</li>
+            <li>❌ Account linking complications</li>
+        </ul>
+    </div>
+
+    <div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 20px 0;">
+        <h2>🎉 Frontend Integration</h2>
+        <pre><code>// Handle all scenarios seamlessly
+const handleFirebaseAuth = async (idToken) => {
+    const response = await fetch('/api/auth/firebase-login/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: idToken })
+    });
+
+    const data = await response.json();
+
+    if (response.ok) {
+        // Store tokens
+        localStorage.setItem('access_token', data.token);
+        localStorage.setItem('refresh_token', data.refresh);
+
+        // Handle different scenarios
+        if (data.user.is_new_user) {
+            // New user - show welcome/onboarding
+            showWelcomeFlow(data.user);
+        } else if (data.user.account_linked) {
+            // Account was just linked - show confirmation
+            showAccountLinkedMessage(data.user);
+        } else {
+            // Returning user - proceed to dashboard
+            redirectToDashboard(data.user);
+        }
+    } else {
+        // Show user-friendly error
+        alert(data.message);
+    }
+};</code></pre>
+    </div>
+</body>
+</html>
+
+
+
+

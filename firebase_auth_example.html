@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase Authentication Example</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; }
+        .info { background-color: #d1ecf1; border-color: #bee5eb; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 3px; overflow-x: auto; }
+        code { background: #e9ecef; padding: 2px 4px; border-radius: 2px; }
+    </style>
+</head>
+<body>
+    <h1>🔥 Firebase Authentication Integration Guide</h1>
+
+    <div class="section info">
+        <h2>📋 Complete Response Format</h2>
+        <p>The <code>/api/auth/firebase-login/</code> endpoint returns:</p>
+
+        <h3>✅ Success Response (200 OK)</h3>
+        <pre><code>{
+    "user": {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "username": "firebase-uid-12345",
+        "email": "user@gmail.com",
+        "display_name": "John Doe",
+        "profile_picture": "https://profile-photo-url",
+        "firebase_uid": "firebase-uid-12345",
+        "is_new_user": false,
+        "account_linked": false
+    },
+    "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+    "message": "Welcome back! Successfully authenticated with Google."
+}</code></pre>
+
+        <h3>❌ Error Response (400 Bad Request)</h3>
+        <pre><code>{
+    "error": "Authentication failed",
+    "message": "Firebase ID token is required. Please sign in with Google first."
+}</code></pre>
+
+        <h3>⚠️ Expired Token (401 Unauthorized)</h3>
+        <pre><code>{
+    "error": "Session expired",
+    "message": "Your Google sign-in session has expired. Please sign in again."
+}</code></pre>
+    </div>
+
+    <div class="section">
+        <h2>🚀 Frontend Integration Example</h2>
+
+        <h3>JavaScript/React Implementation</h3>
+        <pre><code>// 1. Initialize Firebase in your app
+import { initializeApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+
+const firebaseConfig = {
+    apiKey: "your-api-key",
+    authDomain: "your-project.firebaseapp.com",
+    projectId: "your-project-id",
+    // ... other config
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+// 2. Google Sign-In Function
+const handleGoogleSignIn = async () => {
+    const provider = new GoogleAuthProvider();
+
+    try {
+        // Sign in with Google popup
+        const result = await signInWithPopup(auth, provider);
+        const user = result.user;
+
+        // Get Firebase ID token
+        const idToken = await user.getIdToken();
+
+        // Send token to Django backend
+        const response = await fetch('/api/auth/firebase-login/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                token: idToken
+            })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+            // Success! Store tokens for future API calls
+            localStorage.setItem('access_token', data.access_token);
+            localStorage.setItem('refresh_token', data.refresh_token);
+
+            // Update UI with user info
+            console.log('Welcome:', data.user.display_name);
+            console.log('New user?', data.user.is_new_user);
+
+            // Redirect or update app state
+            if (data.user.is_new_user) {
+                // Show welcome message for new users
+                showWelcomeMessage(data.user);
+            } else {
+                // Show "welcome back" for existing users
+                showWelcomeBackMessage(data.user);
+            }
+        } else {
+            // Handle error
+            console.error('Auth failed:', data.message);
+            alert(data.message);
+        }
+
+    } catch (error) {
+        console.error('Google sign-in failed:', error);
+        alert('Sign-in failed. Please try again.');
+    }
+};
+
+// 3. Using the token for authenticated API calls
+const makeAuthenticatedRequest = async (url, options = {}) => {
+    const token = localStorage.getItem('access_token');
+
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            ...options.headers,
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        }
+    });
+
+    if (response.status === 401) {
+        // Token expired, try to refresh
+        await refreshAccessToken();
+        // Retry the request
+        return makeAuthenticatedRequest(url, options);
+    }
+
+    return response;
+};
+
+// 4. Token refresh function
+const refreshAccessToken = async () => {
+    const refreshToken = localStorage.getItem('refresh_token');
+
+    const response = await fetch('/api/auth/token/refresh/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            refresh: refreshToken
+        })
+    });
+
+    if (response.ok) {
+        const data = await response.json();
+        localStorage.setItem('access_token', data.access);
+    }
+};</code></pre>
+    </div>
+
+    <div class="section success">
+        <h2>✅ User Experience Flow</h2>
+
+        <h3>For New Users:</h3>
+        <ol>
+            <li>User clicks "Sign in with Google" button</li>
+            <li>Firebase Google popup appears</li>
+            <li>User selects Google account</li>
+            <li>Django creates new user account with Google data</li>
+            <li>User sees: <em>"Welcome! Successfully authenticated with Google."</em></li>
+            <li>App redirects to onboarding or dashboard</li>
+        </ol>
+
+        <h3>For Returning Users:</h3>
+        <ol>
+            <li>User clicks "Sign in with Google" button</li>
+            <li>Firebase Google popup appears</li>
+            <li>User selects Google account</li>
+            <li>Django finds existing user account</li>
+            <li>User sees: <em>"Welcome back! Successfully authenticated with Google."</em></li>
+            <li>App redirects to dashboard</li>
+        </ol>
+    </div>
+
+    <div class="section">
+        <h2>🔧 API Usage Examples</h2>
+
+        <h3>Using curl:</h3>
+        <pre><code># With Firebase ID token
+curl -X POST http://localhost:8000/api/auth/firebase-login/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "token": "eyJhbGciOiJSUzI1NiIsImtpZCI6I..."
+  }'
+
+# Expected response:
+# {
+#     "user": {...},
+#     "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+#     "refresh_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+#     "message": "Welcome! Successfully authenticated with Google."
+# }</code></pre>
+
+        <h3>Using JavaScript:</h3>
+        <pre><code>// After getting Firebase ID token
+const response = await fetch('/api/auth/firebase-login/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: firebaseIdToken })
+});
+
+const data = await response.json();
+    console.log('User:', data.user.display_name);
+    console.log('Token:', data.access_token);</code></pre>
+    </div>
+
+    <div class="section">
+        <h2>💡 Key Features</h2>
+        <ul>
+            <li><strong>🔐 Secure:</strong> Validates Firebase ID tokens server-side</li>
+            <li><strong>👤 Auto User Creation:</strong> Creates Django users from Google profiles</li>
+            <li><strong>🔄 User Updates:</strong> Keeps user data in sync with Google</li>
+            <li><strong>🎫 JWT Tokens:</strong> Returns Django JWT for API authentication</li>
+            <li><strong>🆕 New User Detection:</strong> <code>is_new_user</code> flag for onboarding</li>
+            <li><strong>📸 Profile Pictures:</strong> Automatically syncs Google profile photos</li>
+            <li><strong>🔄 Token Refresh:</strong> Supports JWT token refresh flow</li>
+        </ul>
+    </div>
+
+    <div class="section info">
+        <h2>🚨 Error Handling</h2>
+        <p>The endpoint handles these scenarios gracefully:</p>
+        <ul>
+            <li><strong>Missing Token:</strong> Clear message to sign in with Google first</li>
+            <li><strong>Expired Token:</strong> Prompts user to sign in again</li>
+            <li><strong>Invalid Token:</strong> User-friendly authentication failure message</li>
+            <li><strong>Server Issues:</strong> Service unavailable message</li>
+        </ul>
+    </div>
+
+    <div class="section success">
+        <h2>🎯 Perfect for Normal Users!</h2>
+        <p>This response format is designed to provide:</p>
+        <ul>
+            <li><strong>✅ Immediate Feedback:</strong> Welcome messages for new/returning users</li>
+            <li><strong>✅ Complete User Data:</strong> All necessary user information</li>
+            <li><strong>✅ Authentication Tokens:</strong> Ready for subsequent API calls</li>
+            <li><strong>✅ Error Recovery:</strong> Clear instructions when things go wrong</li>
+            <li><strong>✅ Seamless Experience:</strong> Just like regular email/password login</li>
+        </ul>
+    </div>
+</body>
+</html>

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Notifications - SSE Client Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .notification {
+            border-left: 4px solid #007bff;
+            padding: 15px;
+            margin: 10px 0;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .notification.success { border-left-color: #28a745; }
+        .notification.warning { border-left-color: #ffc107; }
+        .notification.error { border-left-color: #dc3545; }
+        .notification.course { border-left-color: #17a2b8; }
+        .notification.grade { border-left-color: #6f42c1; }
+        .notification.system { border-left-color: #6c757d; }
+        
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .status.connected { background: #d4edda; color: #155724; }
+        .status.disconnected { background: #f8d7da; color: #721c24; }
+        .status.connecting { background: #fff3cd; color: #856404; }
+        
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        
+        .heartbeat {
+            font-size: 12px;
+            color: #6c757d;
+            font-style: italic;
+        }
+        
+        .notification-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .notification-body {
+            margin-bottom: 5px;
+        }
+        .notification-meta {
+            font-size: 12px;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔔 Real-time Notifications</h1>
+        <p>This example shows how to connect to the SSE notification stream.</p>
+        
+        <div class="controls">
+            <button id="connectBtn" onclick="connect()">Connect to Stream</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="clearNotifications()">Clear All</button>
+        </div>
+        
+        <div id="status" class="status disconnected">Disconnected</div>
+        
+        <div id="notifications"></div>
+        
+        <div id="heartbeat" class="heartbeat"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+        
+        // Replace with your actual API base URL and token
+        const API_BASE_URL = 'http://localhost:8000/api';
+        const ACCESS_TOKEN = 'YOUR_ACCESS_TOKEN_HERE'; // Get this from login response
+        
+        function connect() {
+            if (eventSource) {
+                console.log('Already connected');
+                return;
+            }
+            
+            updateStatus('connecting', 'Connecting...');
+            
+            // Create EventSource connection
+            const url = `${API_BASE_URL}/notifications/stream/`;
+            eventSource = new EventSource(url, {
+                headers: {
+                    'Authorization': `Bearer ${ACCESS_TOKEN}`
+                }
+            });
+            
+            // Handle connection open
+            eventSource.onopen = function(event) {
+                console.log('SSE connection opened');
+                updateStatus('connected', 'Connected - Listening for notifications');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                reconnectAttempts = 0;
+            };
+            
+            // Handle incoming messages
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    // Handle heartbeat
+                    if (data.type === 'heartbeat') {
+                        document.getElementById('heartbeat').textContent = 
+                            `Last heartbeat: ${new Date(data.timestamp).toLocaleTimeString()}`;
+                        return;
+                    }
+                    
+                    // Handle notification
+                    addNotification(data);
+                } catch (error) {
+                    console.error('Error parsing SSE data:', error);
+                }
+            };
+            
+            // Handle connection errors
+            eventSource.onerror = function(event) {
+                console.error('SSE connection error:', event);
+                updateStatus('disconnected', 'Connection error - Attempting to reconnect...');
+                
+                // Attempt to reconnect
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    setTimeout(() => {
+                        console.log(`Reconnection attempt ${reconnectAttempts}`);
+                        disconnect();
+                        connect();
+                    }, 2000 * reconnectAttempts); // Exponential backoff
+                } else {
+                    updateStatus('disconnected', 'Connection failed - Max reconnection attempts reached');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('disconnectBtn').disabled = true;
+                }
+            };
+        }
+        
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                updateStatus('disconnected', 'Disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+            }
+        }
+        
+        function updateStatus(type, message) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${type}`;
+            statusEl.textContent = message;
+        }
+        
+        function addNotification(notification) {
+            const notificationsContainer = document.getElementById('notifications');
+            
+            const notificationEl = document.createElement('div');
+            notificationEl.className = `notification ${notification.type}`;
+            notificationEl.innerHTML = `
+                <div class="notification-title">${notification.title}</div>
+                <div class="notification-body">${notification.body}</div>
+                <div class="notification-meta">
+                    Type: ${notification.type} | 
+                    Time: ${new Date(notification.created_at).toLocaleString()} |
+                    Read: ${notification.is_read ? 'Yes' : 'No'}
+                    ${notification.link ? ` | <a href="${notification.link}" target="_blank">View Link</a>` : ''}
+                </div>
+            `;
+            
+            // Add to top of notifications
+            notificationsContainer.insertBefore(notificationEl, notificationsContainer.firstChild);
+            
+            // Show browser notification if supported
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification(notification.title, {
+                    body: notification.body,
+                    icon: '/favicon.ico'
+                });
+            }
+        }
+        
+        function clearNotifications() {
+            document.getElementById('notifications').innerHTML = '';
+        }
+        
+        // Request notification permission on page load
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+        
+        // Auto-connect on page load (remove this if you want manual connection)
+        // connect();
+        
+        // Clean up on page unload
+        window.addEventListener('beforeunload', disconnect);
+    </script>
+</body>
+</html>
+

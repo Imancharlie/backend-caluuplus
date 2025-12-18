@@ -1,0 +1,170 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Students{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Students</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <span>Students</span>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <!-- Filters -->
+    <div class="toolbar">
+        <form method="get" class="search-box" id="search-form">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input type="text" name="search" id="search-input" placeholder="Search by name, email, or program..." value="{{ search }}" class="form-control" autocomplete="off">
+        </form>
+        <select name="university" class="form-control" style="width: auto; max-width: 200px;" onchange="applyFilter('university', this.value)">
+            <option value="">All Universities</option>
+            {% for uni in universities %}
+            <option value="{{ uni.id }}" {% if university_filter == uni.id|stringformat:'s' %}selected{% endif %}>{{ uni.name|truncatechars:25 }}</option>
+            {% endfor %}
+        </select>
+        <select name="year" class="form-control" style="width: auto;" onchange="applyFilter('year', this.value)">
+            <option value="">All Years</option>
+            <option value="1" {% if year_filter == '1' %}selected{% endif %}>Year 1</option>
+            <option value="2" {% if year_filter == '2' %}selected{% endif %}>Year 2</option>
+            <option value="3" {% if year_filter == '3' %}selected{% endif %}>Year 3</option>
+            <option value="4" {% if year_filter == '4' %}selected{% endif %}>Year 4</option>
+            <option value="5" {% if year_filter == '5' %}selected{% endif %}>Year 5</option>
+        </select>
+    </div>
+
+    <!-- Table -->
+    {% if students %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>University</th>
+                    <th>Program</th>
+                    <th>Year</th>
+                    <th>Semester</th>
+                    <th>Has Courses</th>
+                    <th>Joined</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for student in students %}
+                <tr data-view-url="{% url 'dashboard-student-detail' student.id %}" style="cursor: pointer;">
+                    <td>
+                        <strong>{{ student.user.display_name }}</strong>
+                    </td>
+                    <td>{{ student.user.email }}</td>
+                    <td>{{ student.university.name|truncatechars:20 }}</td>
+                    <td>{{ student.program.name|truncatechars:25 }}</td>
+                    <td>Year {{ student.year }}</td>
+                    <td>Sem {{ student.semester }}</td>
+                    <td>
+                        {% if student.has_courses %}
+                        <span class="badge badge-success">Yes</span>
+                        {% else %}
+                        <span class="badge badge-warning">No</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ student.created_at|date:"M d, Y" }}</td>
+                    <td>
+                        <a href="{% url 'dashboard-student-detail' student.id %}" class="btn btn-secondary btn-sm">View</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if students.has_other_pages %}
+    <div class="pagination">
+        {% if students.has_previous %}
+        <a href="?page={{ students.previous_page_number }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}{% if program_filter %}&program={{ program_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}">&laquo; Previous</a>
+        {% endif %}
+        
+        {% for num in students.paginator.page_range %}
+            {% if students.number == num %}
+                <span class="current">{{ num }}</span>
+            {% elif num > students.number|add:'-3' and num < students.number|add:'3' %}
+                <a href="?page={{ num }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}{% if program_filter %}&program={{ program_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}">{{ num }}</a>
+            {% endif %}
+        {% endfor %}
+        
+        {% if students.has_next %}
+        <a href="?page={{ students.next_page_number }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}{% if program_filter %}&program={{ program_filter }}{% endif %}{% if year_filter %}&year={{ year_filter }}{% endif %}">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+        </svg>
+        <h3>No students found</h3>
+        <p>{% if search or university_filter or program_filter or year_filter %}No students match your filters.{% else %}No students have registered yet.{% endif %}</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+// Real-time search with debouncing
+let searchTimeout;
+const searchInput = document.getElementById('search-input');
+const searchForm = document.getElementById('search-form');
+
+if (searchInput && searchForm) {
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(function() {
+            // Build URL with current filters
+            const url = new URL(window.location);
+            url.searchParams.set('search', searchInput.value);
+            url.searchParams.delete('page');
+            
+            // Preserve all filters
+            const filters = ['university', 'program', 'year'];
+            filters.forEach(function(filterName) {
+                const select = document.querySelector('select[name="' + filterName + '"]');
+                if (select && select.value) {
+                    url.searchParams.set(filterName, select.value);
+                } else {
+                    url.searchParams.delete(filterName);
+                }
+            });
+            
+            window.location = url;
+        }, 500);
+    });
+}
+
+function applyFilter(name, value) {
+    const url = new URL(window.location);
+    if (value) {
+        url.searchParams.set(name, value);
+    } else {
+        url.searchParams.delete(name);
+    }
+    url.searchParams.delete('page');
+    window.location = url;
+}
+
+// Double-click to view
+document.querySelectorAll('tbody tr[data-view-url]').forEach(function(row) {
+    row.addEventListener('dblclick', function(e) {
+        if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && !e.target.closest('.actions')) {
+            window.location.href = this.getAttribute('data-view-url');
+        }
+    });
+});
+</script>
+{% endblock %}
+

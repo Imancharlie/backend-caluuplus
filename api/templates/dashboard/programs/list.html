@@ -1,0 +1,207 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Programs{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Programs</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <span>Programs</span>
+        </div>
+    </div>
+    <a href="{% url 'dashboard-program-create' %}" class="btn btn-primary">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+        </svg>
+        Add Program
+    </a>
+</div>
+
+<div class="card">
+    <!-- Filters -->
+    <div class="toolbar">
+        <form method="get" class="search-box" id="search-form">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input type="text" name="search" id="search-input" placeholder="Search programs..." value="{{ search }}" class="form-control" autocomplete="off">
+            <input type="hidden" name="university" value="{{ university_filter }}">
+            <input type="hidden" name="college" value="{{ college_filter }}">
+        </form>
+        <select name="university" class="form-control" style="width: auto;" onchange="filterByUniversity(this.value)">
+            <option value="">All Universities</option>
+            {% for uni in universities %}
+            <option value="{{ uni.id }}" {% if university_filter == uni.id|stringformat:'s' %}selected{% endif %}>{{ uni.name }}</option>
+            {% endfor %}
+        </select>
+        <select name="college" id="college-filter" class="form-control" style="width: auto;" onchange="applyFilters()">
+            <option value="">All Colleges</option>
+            {% for col in colleges %}
+            <option value="{{ col.id }}" {% if college_filter == col.id|stringformat:'s' %}selected{% endif %}>{{ col.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <!-- Table -->
+    {% if programs %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>College</th>
+                    <th>University</th>
+                    <th>Duration</th>
+                    <th>Courses</th>
+                    <th>Students</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for program in programs %}
+                <tr data-edit-url="{% url 'dashboard-program-edit' program.id %}" style="cursor: pointer;">
+                    <td><strong>{{ program.name|truncatechars:40 }}</strong></td>
+                    <td>{{ program.college.name|truncatechars:25 }}</td>
+                    <td>{{ program.college.university.name|truncatechars:20 }}</td>
+                    <td>{{ program.duration }} years</td>
+                    <td><span class="badge badge-primary">{{ program.course_count }}</span></td>
+                    <td><span class="badge badge-success">{{ program.student_count }}</span></td>
+                    <td>
+                        <div class="actions">
+                            <a href="{% url 'dashboard-program-edit' program.id %}" class="btn btn-secondary btn-sm">Edit</a>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation(); confirmDelete('{{ program.id }}', '{{ program.name|escapejs }}')">Delete</button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if programs.has_other_pages %}
+    <div class="pagination">
+        {% if programs.has_previous %}
+        <a href="?page={{ programs.previous_page_number }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}{% if college_filter %}&college={{ college_filter }}{% endif %}">&laquo; Previous</a>
+        {% endif %}
+        
+        {% for num in programs.paginator.page_range %}
+            {% if programs.number == num %}
+                <span class="current">{{ num }}</span>
+            {% elif num > programs.number|add:'-3' and num < programs.number|add:'3' %}
+                <a href="?page={{ num }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}{% if college_filter %}&college={{ college_filter }}{% endif %}">{{ num }}</a>
+            {% endif %}
+        {% endfor %}
+        
+        {% if programs.has_next %}
+        <a href="?page={{ programs.next_page_number }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}{% if college_filter %}&college={{ college_filter }}{% endif %}">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+        </svg>
+        <h3>No programs found</h3>
+        <p>{% if search or university_filter or college_filter %}No programs match your filters.{% else %}Get started by adding your first program.{% endif %}</p>
+        {% if not search and not university_filter and not college_filter %}
+        <a href="{% url 'dashboard-program-create' %}" class="btn btn-primary" style="margin-top: 1rem;">Add Program</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal-overlay" id="deleteModal">
+    <div class="modal">
+        <h3 class="modal-title">Confirm Delete</h3>
+        <p>Are you sure you want to delete <strong id="deleteName"></strong>?</p>
+        <p style="color: var(--danger); font-size: 0.875rem; margin-top: 0.5rem;">This will also delete all associated courses.</p>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <form id="deleteForm" method="post" style="display: inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger">Delete</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// Real-time search with debouncing
+let searchTimeout;
+const searchInput = document.getElementById('search-input');
+const searchForm = document.getElementById('search-form');
+
+if (searchInput && searchForm) {
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(function() {
+            // Build URL with current filters
+            const url = new URL(window.location);
+            url.searchParams.set('search', searchInput.value);
+            url.searchParams.delete('page');
+            
+            // Preserve filters
+            const universitySelect = document.querySelector('select[name="university"]');
+            const collegeSelect = document.getElementById('college-filter');
+            if (universitySelect && universitySelect.value) {
+                url.searchParams.set('university', universitySelect.value);
+            } else {
+                url.searchParams.delete('university');
+            }
+            if (collegeSelect && collegeSelect.value) {
+                url.searchParams.set('college', collegeSelect.value);
+            } else {
+                url.searchParams.delete('college');
+            }
+            
+            window.location = url;
+        }, 500);
+    });
+}
+
+function filterByUniversity(universityId) {
+    const url = new URL(window.location);
+    url.searchParams.set('university', universityId);
+    url.searchParams.delete('college');
+    url.searchParams.delete('page');
+    window.location = url;
+}
+
+function applyFilters() {
+    const url = new URL(window.location);
+    url.searchParams.set('college', document.getElementById('college-filter').value);
+    url.searchParams.delete('page');
+    window.location = url;
+}
+
+function confirmDelete(id, name) {
+    document.getElementById('deleteName').textContent = name;
+    document.getElementById('deleteForm').action = '/api/dashboard/programs/' + id + '/delete/';
+    document.getElementById('deleteModal').classList.add('active');
+}
+
+function closeModal() {
+    document.getElementById('deleteModal').classList.remove('active');
+}
+
+document.getElementById('deleteModal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// Double-click to edit
+document.querySelectorAll('tbody tr[data-edit-url]').forEach(function(row) {
+    row.addEventListener('dblclick', function(e) {
+        if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && !e.target.closest('.actions')) {
+            window.location.href = this.getAttribute('data-edit-url');
+        }
+    });
+});
+</script>
+{% endblock %}
+

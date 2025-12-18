@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
-from .models import User, University, College, Program, Course, Student, StudentCourse
+from .models import User, University, College, Program, Course, Student, StudentCourse, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -10,16 +10,52 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ('email', 'password', 'password_confirm', 'display_name')
+        fields = ('email', 'password', 'password_confirm', 'display_name', 'gender', 'phone_number')
     
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError("Passwords don't match")
+        
+        # Check if user already exists with this email
+        email = attrs.get('email')
+        if email:
+            try:
+                existing_user = User.objects.get(email=email)
+                # If user exists but has no password (Google-only user), allow registration to set password
+                if existing_user.has_usable_password():
+                    raise serializers.ValidationError({
+                        'email': 'A user with this email already exists. Please login instead.'
+                    })
+                # User exists but no password - this will be handled in create()
+            except User.DoesNotExist:
+                pass  # New user, proceed with registration
+        
         return attrs
     
     def create(self, validated_data):
-        validated_data.pop('password_confirm')
-        # Set username to email for compatibility
+        password_confirm = validated_data.pop('password_confirm')
+        email = validated_data.get('email')
+        password = validated_data.get('password')
+        
+        # Check if user already exists (from Google login) but has no password
+        try:
+            existing_user = User.objects.get(email=email)
+            # User exists from Google login, now setting password
+            if not existing_user.has_usable_password():
+                existing_user.set_password(password)
+                # Update other fields if provided
+                if 'display_name' in validated_data:
+                    existing_user.display_name = validated_data['display_name']
+                if 'gender' in validated_data:
+                    existing_user.gender = validated_data['gender']
+                if 'phone_number' in validated_data:
+                    existing_user.phone_number = validated_data['phone_number']
+                existing_user.save()
+                return existing_user
+        except User.DoesNotExist:
+            pass
+        
+        # New user registration
         validated_data['username'] = validated_data['email']
         user = User.objects.create_user(**validated_data)
         return user
@@ -49,7 +85,20 @@ class UserLoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ('id', 'email', 'display_name')
+        fields = ('id', 'email', 'display_name', 'gender', 'phone_number')
+
+
+class UserUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('email', 'display_name', 'phone_number')
+
+    def validate_email(self, value):
+        user = self.context['request'].user
+        if value and value != user.email:
+            if User.objects.filter(email=value).exists():
+                raise serializers.ValidationError('A user with this email already exists.')
+        return value
 
 
 class UniversitySerializer(serializers.ModelSerializer):
@@ -90,14 +139,49 @@ class StudentCourseSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'created_at', 'updated_at')
 
 class CourseDataSerializer(serializers.Serializer):
-    id = serializers.CharField()
-    code = serializers.CharField()
-    name = serializers.CharField()
-    credits = serializers.IntegerField()
-    type = serializers.CharField()
-    semester = serializers.IntegerField()
-    year = serializers.IntegerField()
+    # Support both naming conventions: backend (code, name) and frontend (course_code, course_name)
+    id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    course_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # Frontend naming
+    
+    code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    course_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # Frontend naming
+    
+    name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    course_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # Frontend naming
+    
+    credits = serializers.IntegerField(required=False, allow_null=True)
+    credit_hour = serializers.IntegerField(required=False, allow_null=True)  # Frontend naming
+    
+    type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_elective = serializers.BooleanField(required=False, allow_null=True)  # Frontend naming
+    
+    semester = serializers.IntegerField(required=False, allow_null=True)
+    year = serializers.IntegerField(required=False, allow_null=True)
     added_at = serializers.DateTimeField(required=False, allow_null=True)
+    
+    def validate(self, data):
+        # Normalize field names - map frontend names to backend names
+        # Handle course_id -> id
+        if 'course_id' in data and data['course_id'] and not data.get('id'):
+            data['id'] = data['course_id']
+        
+        # Handle course_code -> code
+        if 'course_code' in data and data['course_code'] and not data.get('code'):
+            data['code'] = data['course_code']
+        
+        # Handle course_name -> name
+        if 'course_name' in data and data['course_name'] and not data.get('name'):
+            data['name'] = data['course_name']
+        
+        # Handle credit_hour -> credits
+        if 'credit_hour' in data and data['credit_hour'] is not None and data.get('credits') is None:
+            data['credits'] = data['credit_hour']
+        
+        # Handle is_elective -> type
+        if 'is_elective' in data and data['is_elective'] is not None and not data.get('type'):
+            data['type'] = 'elective' if data['is_elective'] else 'core'
+        
+        return data
 
 class StudentCourseUpdateSerializer(serializers.Serializer):
     courses = CourseDataSerializer(many=True)
@@ -136,7 +220,261 @@ class TargetGPASerializer(serializers.Serializer):
     target_gpa = serializers.FloatField(min_value=0.0, max_value=5.0)
 
 
+class GPACalculationSerializer(serializers.Serializer):
+    gpa = serializers.DecimalField(max_digits=3, decimal_places=2, min_value=0.0, max_value=5.0)
+    semester = serializers.IntegerField(min_value=1, max_value=2)
+    academic_year = serializers.IntegerField(min_value=1)
+    is_target = serializers.BooleanField(default=False)
+
+
 
 
 class CourseAddSerializer(serializers.Serializer):
-    course_id = serializers.UUIDField()
+    course_id = serializers.UUIDField(required=False, allow_null=True)
+    code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    credits = serializers.IntegerField(required=False, allow_null=True)
+    type = serializers.ChoiceField(choices=[('core', 'Core'), ('elective', 'Elective')], required=False, default='core')
+    semester = serializers.IntegerField(required=False, allow_null=True)
+    year = serializers.IntegerField(required=False, allow_null=True)
+    
+    def validate(self, data):
+        # Either course_id must be provided, or course details (code, name, credits, semester, year) must be provided
+        course_id = data.get('course_id')
+        code = data.get('code')
+        name = data.get('name')
+        credits = data.get('credits')
+        semester = data.get('semester')
+        year = data.get('year')
+        
+        if not course_id and not (code and name and credits is not None and semester is not None and year is not None):
+            raise serializers.ValidationError(
+                "Either 'course_id' must be provided, or all of 'code', 'name', 'credits', 'semester', and 'year' must be provided."
+            )
+        return data
+
+
+class HelpMessageSerializer(serializers.ModelSerializer):
+    """Serializer for help messages"""
+    
+    class Meta:
+        model = HelpMessage
+        fields = ['subject', 'message', 'user_email', 'user_name']
+        
+    def validate_subject(self, value):
+        """Validate that the subject is one of the allowed choices"""
+        valid_subjects = [
+            'General Inquiry',
+            'Account & Login', 
+            'Timetable Help',
+            'GPA Calculator',
+            'Bug Report',
+            'Feature Request'
+        ]
+        if value not in valid_subjects:
+            raise serializers.ValidationError("Invalid subject selected.")
+        return value
+    
+    def validate_message(self, value):
+        """Validate message content"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Message cannot be empty.")
+        if len(value.strip()) < 3:
+            raise serializers.ValidationError("Message must be at least 3 characters long.")
+        return value.strip()
+    
+    def validate_user_email(self, value):
+        """Validate email format"""
+        if not value or '@' not in value:
+            raise serializers.ValidationError("Please provide a valid email address.")
+        return value.lower()
+    
+    def validate_user_name(self, value):
+        """Validate user name"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Name cannot be empty.")
+        return value.strip()
+
+
+class HelpMessageResponseSerializer(serializers.ModelSerializer):
+    """Serializer for help message responses (includes all fields)"""
+    
+    class Meta:
+        model = HelpMessage
+        fields = [
+            'id', 'subject', 'message', 'user_email', 'user_name', 
+            'status', 'ticket_number', 'admin_response', 'admin_responded_at',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'status', 'ticket_number', 'admin_response', 
+            'admin_responded_at', 'created_at', 'updated_at'
+        ]
+
+
+class QuoteSerializer(serializers.ModelSerializer):
+    """Serializer for quotes"""
+    
+    class Meta:
+        model = Quote
+        fields = ['id', 'text', 'author', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']
+    
+    def validate_text(self, value):
+        """Validate quote text"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Quote text cannot be empty.")
+        if len(value.strip()) < 10:
+            raise serializers.ValidationError("Quote text must be at least 10 characters long.")
+        return value.strip()
+    
+    def validate_author(self, value):
+        """Validate author name"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Author name cannot be empty.")
+        return value.strip()
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    old_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    new_password_confirm = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        user = self.context['request'].user
+        old_password = attrs.get('old_password')
+        new_password = attrs.get('new_password')
+        new_password_confirm = attrs.get('new_password_confirm')
+        if not user.check_password(old_password):
+            raise serializers.ValidationError({'old_password': 'Old password is incorrect'})
+        if new_password != new_password_confirm:
+            raise serializers.ValidationError({'new_password_confirm': "Passwords don't match"})
+        validate_password(new_password, user)
+        return attrs
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    user_name = serializers.CharField(source='user.display_name', read_only=True)
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = [
+            'id', 'user', 'user_name', 'user_email', 'title', 'body',
+            'notification_type', 'is_read', 'read_at', 'link', 'slide',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'is_read', 'read_at', 'created_at']
+
+
+class UserSearchSerializer(serializers.ModelSerializer):
+    """Serializer for user search results in notifications"""
+    avatar_initials = serializers.SerializerMethodField()
+    avatar_color = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'display_name', 'email', 'avatar_initials', 'avatar_color'
+        ]
+
+    def get_avatar_initials(self, obj):
+        """Generate initials from display name"""
+        if obj.display_name:
+            words = obj.display_name.split()
+            if len(words) >= 2:
+                return f"{words[0][0]}{words[1][0]}".upper()
+            else:
+                return obj.display_name[:2].upper()
+        return obj.email[:2].upper()
+
+    def get_avatar_color(self, obj):
+        """Generate consistent color for user avatar"""
+        # Simple hash-based color generation
+        import hashlib
+        hash_obj = hashlib.md5(obj.email.encode())
+        hash_hex = hash_obj.hexdigest()
+        colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899']
+        color_index = int(hash_hex[-1], 16) % len(colors)
+        return colors[color_index]
+
+
+class UniversityAmbassadorSerializer(serializers.ModelSerializer):
+    """Serializer for University Ambassador"""
+    user_name = serializers.CharField(source='user.display_name', read_only=True)
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    university_name = serializers.CharField(source='university.name', read_only=True)
+
+    class Meta:
+        model = UniversityAmbassador
+        fields = ['id', 'user', 'user_name', 'user_email', 'university', 'university_name', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class AmbassadorActivitySerializer(serializers.ModelSerializer):
+    """Serializer for Ambassador Activity"""
+    ambassador_name = serializers.CharField(source='ambassador.user.display_name', read_only=True)
+    university_name = serializers.CharField(source='ambassador.university.name', read_only=True)
+
+    class Meta:
+        model = AmbassadorActivity
+        fields = ['id', 'ambassador', 'ambassador_name', 'university_name', 'activity_type', 'description', 'metadata', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class AmbassadorMessageSerializer(serializers.ModelSerializer):
+    """Serializer for Ambassador Messages"""
+    sender_name = serializers.CharField(source='sender.display_name', read_only=True)
+    sender_email = serializers.EmailField(source='sender.email', read_only=True)
+    recipient_name = serializers.CharField(source='recipient.user.display_name', read_only=True)
+    university_name = serializers.CharField(source='recipient.university.name', read_only=True)
+
+    class Meta:
+        model = AmbassadorMessage
+        fields = [
+            'id', 'sender', 'sender_name', 'sender_email',
+            'recipient', 'recipient_name', 'university_name',
+            'subject', 'message', 'priority', 'status',
+            'read_at', 'completed_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'read_at', 'completed_at', 'created_at', 'updated_at']
+
+
+class AmbassadorMessageCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating Ambassador Messages"""
+    class Meta:
+        model = AmbassadorMessage
+        fields = ['recipient', 'subject', 'message', 'priority']
+
+    def validate_recipient(self, value):
+        """Ensure the recipient is a valid ambassador"""
+        if not UniversityAmbassador.objects.filter(id=value.id).exists():
+            raise serializers.ValidationError("Invalid ambassador selected.")
+        return value
+
+    def validate_subject(self, value):
+        """Validate subject"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Subject cannot be empty.")
+        return value.strip()
+
+    def validate_message(self, value):
+        """Validate message"""
+        if not value or not value.strip():
+            raise serializers.ValidationError("Message cannot be empty.")
+        if len(value.strip()) < 10:
+            raise serializers.ValidationError("Message must be at least 10 characters long.")
+        return value.strip()
+
+
+class UniversityLinkSerializer(serializers.ModelSerializer):
+    """Serializer for University Links"""
+    university_name = serializers.CharField(source='university.name', read_only=True)
+
+    class Meta:
+        model = UniversityLink
+        fields = [
+            'id', 'name', 'url', 'description', 'is_active',
+            'university', 'university_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']

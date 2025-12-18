@@ -1,0 +1,49 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}{{ form_title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ form_title }}</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <a href="{% url 'dashboard-colleges' %}">Colleges</a>
+            <span>/</span>
+            <span>{{ form_title }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="max-width: 600px;">
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label class="form-label" for="university">University *</label>
+            <select id="university" name="university" class="form-control" required>
+                <option value="">Select University</option>
+                {% for uni in universities %}
+                <option value="{{ uni.id }}" {% if university_id == uni.id|stringformat:'s' %}selected{% endif %}>{{ uni.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="name">College Name *</label>
+            <input type="text" id="name" name="name" class="form-control" 
+                   value="{{ name|default:'' }}" placeholder="e.g., College of Engineering" required>
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <button type="submit" class="btn btn-primary">
+                {% if college %}Update{% else %}Create{% endif %} College
+            </button>
+            <a href="{% url 'dashboard-colleges' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+

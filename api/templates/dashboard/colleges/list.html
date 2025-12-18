@@ -1,0 +1,179 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Colleges{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Colleges</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <span>Colleges</span>
+        </div>
+    </div>
+    <a href="{% url 'dashboard-college-create' %}" class="btn btn-primary">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+        </svg>
+        Add College
+    </a>
+</div>
+
+<div class="card">
+    <!-- Filters -->
+    <div class="toolbar">
+        <form method="get" class="search-box" id="search-form">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input type="text" name="search" id="search-input" placeholder="Search colleges..." value="{{ search }}" class="form-control" autocomplete="off">
+        </form>
+        <select name="university" class="form-control" style="width: auto;" onchange="this.form.submit()" form="filter-form">
+            <option value="">All Universities</option>
+            {% for uni in universities %}
+            <option value="{{ uni.id }}" {% if university_filter == uni.id|stringformat:'s' %}selected{% endif %}>{{ uni.name }}</option>
+            {% endfor %}
+        </select>
+        <form id="filter-form" method="get" style="display: none;">
+            <input type="hidden" name="search" value="{{ search }}">
+        </form>
+    </div>
+
+    <!-- Table -->
+    {% if colleges %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>University</th>
+                    <th>Programs</th>
+                    <th>Students</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for college in colleges %}
+                <tr data-edit-url="{% url 'dashboard-college-edit' college.id %}" style="cursor: pointer;">
+                    <td><strong>{{ college.name }}</strong></td>
+                    <td>{{ college.university.name }}</td>
+                    <td><span class="badge badge-success">{{ college.program_count }}</span></td>
+                    <td><span class="badge badge-warning">{{ college.student_count }}</span></td>
+                    <td>{{ college.created_at|date:"M d, Y" }}</td>
+                    <td>
+                        <div class="actions">
+                            <a href="{% url 'dashboard-college-edit' college.id %}" class="btn btn-secondary btn-sm">Edit</a>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation(); confirmDelete('{{ college.id }}', '{{ college.name }}')">Delete</button>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination -->
+    {% if colleges.has_other_pages %}
+    <div class="pagination">
+        {% if colleges.has_previous %}
+        <a href="?page={{ colleges.previous_page_number }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}">&laquo; Previous</a>
+        {% endif %}
+        
+        {% for num in colleges.paginator.page_range %}
+            {% if colleges.number == num %}
+                <span class="current">{{ num }}</span>
+            {% elif num > colleges.number|add:'-3' and num < colleges.number|add:'3' %}
+                <a href="?page={{ num }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}">{{ num }}</a>
+            {% endif %}
+        {% endfor %}
+        
+        {% if colleges.has_next %}
+        <a href="?page={{ colleges.next_page_number }}{% if search %}&search={{ search }}{% endif %}{% if university_filter %}&university={{ university_filter }}{% endif %}">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z" />
+        </svg>
+        <h3>No colleges found</h3>
+        <p>{% if search or university_filter %}No colleges match your filters.{% else %}Get started by adding your first college.{% endif %}</p>
+        {% if not search and not university_filter %}
+        <a href="{% url 'dashboard-college-create' %}" class="btn btn-primary" style="margin-top: 1rem;">Add College</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal-overlay" id="deleteModal">
+    <div class="modal">
+        <h3 class="modal-title">Confirm Delete</h3>
+        <p>Are you sure you want to delete <strong id="deleteName"></strong>?</p>
+        <p style="color: var(--danger); font-size: 0.875rem; margin-top: 0.5rem;">This will also delete all associated programs and courses.</p>
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <form id="deleteForm" method="post" style="display: inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger">Delete</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// Real-time search with debouncing
+let searchTimeout;
+const searchInput = document.getElementById('search-input');
+const searchForm = document.getElementById('search-form');
+
+if (searchInput && searchForm) {
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(function() {
+            // Build URL with current filters
+            const url = new URL(window.location);
+            url.searchParams.set('search', searchInput.value);
+            url.searchParams.delete('page');
+            
+            // Preserve university filter
+            const universitySelect = document.querySelector('select[name="university"]');
+            if (universitySelect && universitySelect.value) {
+                url.searchParams.set('university', universitySelect.value);
+            } else {
+                url.searchParams.delete('university');
+            }
+            
+            window.location = url;
+        }, 500);
+    });
+}
+
+function confirmDelete(id, name) {
+    document.getElementById('deleteName').textContent = name;
+    document.getElementById('deleteForm').action = '/api/dashboard/colleges/' + id + '/delete/';
+    document.getElementById('deleteModal').classList.add('active');
+}
+
+function closeModal() {
+    document.getElementById('deleteModal').classList.remove('active');
+}
+
+document.getElementById('deleteModal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// Double-click to edit
+document.querySelectorAll('tbody tr[data-edit-url]').forEach(function(row) {
+    row.addEventListener('dblclick', function(e) {
+        if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && !e.target.closest('.actions')) {
+            window.location.href = this.getAttribute('data-edit-url');
+        }
+    });
+});
+</script>
+{% endblock %}
+

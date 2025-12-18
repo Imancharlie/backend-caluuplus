@@ -1,0 +1,240 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Import Data{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Import Data</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <span>Import Data</span>
+        </div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <!-- Import Universities/Programs -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Import Universities & Programs</h3>
+        </div>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
+            Upload an Excel or CSV file containing universities, colleges, and programs data.
+        </p>
+        
+        <div style="background: var(--bg-dark); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+            <h4 style="font-size: 0.875rem; margin-bottom: 0.5rem;">Required Columns:</h4>
+            <ul style="color: var(--text-muted); font-size: 0.8rem; margin-left: 1rem;">
+                <li><strong>university</strong> - University name</li>
+                <li><strong>college</strong> - College/Faculty name</li>
+                <li><strong>program</strong> - Program/Degree name</li>
+                <li><strong>duration</strong> - Duration in years (e.g., 3, 4)</li>
+                <li><em>country</em> - Optional, defaults to Tanzania</li>
+            </ul>
+        </div>
+
+        <form method="post" action="{% url 'dashboard-import-universities' %}" enctype="multipart/form-data">
+            {% csrf_token %}
+            <div class="file-upload" onclick="document.getElementById('uni-file').click()">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p>Click to upload or drag and drop</p>
+                <p style="font-size: 0.8rem; color: var(--text-muted);">Excel (.xlsx, .xls) or CSV files</p>
+                <input type="file" id="uni-file" name="file" accept=".csv,.xlsx,.xls" required>
+                <span id="uni-filename" style="display: none; margin-top: 0.5rem; color: var(--accent);"></span>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: 100%; margin-top: 1rem;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                Import Universities & Programs
+            </button>
+        </form>
+    </div>
+
+    <!-- Import Courses -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Import Courses</h3>
+        </div>
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">
+            Upload an Excel or CSV file containing course data. Programs must exist first.
+        </p>
+        
+        <div style="background: var(--bg-dark); border-radius: 8px; padding: 1rem; margin-bottom: 1rem;">
+            <h4 style="font-size: 0.875rem; margin-bottom: 0.5rem;">Required Columns:</h4>
+            <ul style="color: var(--text-muted); font-size: 0.8rem; margin-left: 1rem;">
+                <li><strong>program</strong> - Exact program name (must exist)</li>
+                <li><strong>year</strong> - Academic year (1, 2, 3, etc.)</li>
+                <li><strong>semester</strong> - Semester number (1 or 2)</li>
+                <li><strong>name</strong> - Course name</li>
+                <li><strong>code</strong> - Course code (e.g., CS101)</li>
+                <li><strong>credit</strong> - Credit hours</li>
+                <li><strong>is_elective</strong> - true/false or yes/no</li>
+            </ul>
+        </div>
+
+        <form method="post" action="{% url 'dashboard-import-courses' %}" enctype="multipart/form-data">
+            {% csrf_token %}
+            <div class="file-upload" onclick="document.getElementById('course-file').click()">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p>Click to upload or drag and drop</p>
+                <p style="font-size: 0.8rem; color: var(--text-muted);">Excel (.xlsx, .xls) or CSV files</p>
+                <input type="file" id="course-file" name="file" accept=".csv,.xlsx,.xls" required>
+                <span id="course-filename" style="display: none; margin-top: 0.5rem; color: var(--accent);"></span>
+            </div>
+            <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 1rem;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                Import Courses
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- Sample Data Templates -->
+<div class="card" style="margin-top: 1.5rem;">
+    <div class="card-header">
+        <h3 class="card-title">Sample Data Templates</h3>
+    </div>
+    <p style="color: var(--text-muted); margin-bottom: 1rem;">
+        Download these sample templates to see the expected format for your data files.
+    </p>
+    
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="#" class="btn btn-secondary" onclick="downloadSampleUniversities()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Universities Template (CSV)
+        </a>
+        <a href="#" class="btn btn-secondary" onclick="downloadSampleCourses()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Courses Template (CSV)
+        </a>
+    </div>
+</div>
+
+<!-- Recent Import Jobs -->
+{% if import_jobs %}
+<div class="card" style="margin-top: 1.5rem;">
+    <div class="card-header">
+        <h3 class="card-title">Recent Import History</h3>
+    </div>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>File</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Processed</th>
+                    <th>Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in import_jobs %}
+                <tr>
+                    <td>{{ job.filename|truncatechars:30 }}</td>
+                    <td>{{ job.import_type }}</td>
+                    <td>
+                        {% if job.status == 'completed' %}
+                        <span class="badge badge-success">Completed</span>
+                        {% elif job.status == 'failed' %}
+                        <span class="badge badge-danger">Failed</span>
+                        {% elif job.status == 'processing' %}
+                        <span class="badge badge-warning">Processing</span>
+                        {% else %}
+                        <span class="badge badge-primary">{{ job.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ job.successful_rows|default:0 }} / {{ job.total_rows|default:0 }}</td>
+                    <td>{{ job.created_at|date:"M d, Y H:i" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<script>
+// File upload handling
+document.getElementById('uni-file').addEventListener('change', function(e) {
+    const filename = e.target.files[0]?.name;
+    if (filename) {
+        document.getElementById('uni-filename').textContent = filename;
+        document.getElementById('uni-filename').style.display = 'block';
+    }
+});
+
+document.getElementById('course-file').addEventListener('change', function(e) {
+    const filename = e.target.files[0]?.name;
+    if (filename) {
+        document.getElementById('course-filename').textContent = filename;
+        document.getElementById('course-filename').style.display = 'block';
+    }
+});
+
+// Drag and drop
+document.querySelectorAll('.file-upload').forEach(zone => {
+    zone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        this.classList.add('dragover');
+    });
+    
+    zone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        this.classList.remove('dragover');
+    });
+    
+    zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        this.classList.remove('dragover');
+        const input = this.querySelector('input[type="file"]');
+        input.files = e.dataTransfer.files;
+        input.dispatchEvent(new Event('change'));
+    });
+});
+
+// Sample file downloads
+function downloadSampleUniversities() {
+    const csv = `university,college,program,duration,country
+University of Dar es Salaam,College of Engineering,Bachelor of Science in Computer Science,3,Tanzania
+University of Dar es Salaam,College of Engineering,Bachelor of Science in Civil Engineering,4,Tanzania
+University of Dar es Salaam,College of Arts and Social Sciences,Bachelor of Arts in Economics,3,Tanzania
+Sokoine University of Agriculture,College of Agriculture,Bachelor of Science in Agriculture,4,Tanzania`;
+    
+    downloadCSV(csv, 'universities_template.csv');
+}
+
+function downloadSampleCourses() {
+    const csv = `program,year,semester,name,code,credit,is_elective
+Bachelor of Science in Computer Science,1,1,Introduction to Programming,CS101,3,false
+Bachelor of Science in Computer Science,1,1,Mathematics for Computing,MT101,3,false
+Bachelor of Science in Computer Science,1,2,Data Structures,CS102,3,false
+Bachelor of Science in Computer Science,2,1,Database Systems,CS201,3,false
+Bachelor of Science in Computer Science,2,1,Web Development,CS202,3,true`;
+    
+    downloadCSV(csv, 'courses_template.csv');
+}
+
+function downloadCSV(content, filename) {
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+}
+</script>
+{% endblock %}
+
+

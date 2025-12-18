@@ -1,0 +1,96 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}{{ form_title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ form_title }}</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <a href="{% url 'dashboard-programs' %}">Programs</a>
+            <span>/</span>
+            <span>{{ form_title }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="max-width: 600px;">
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label class="form-label" for="university">University *</label>
+            <select id="university" class="form-control" onchange="loadColleges(this.value)">
+                <option value="">Select University</option>
+                {% for uni in universities %}
+                <option value="{{ uni.id }}" {% if program and program.college.university_id == uni.id %}selected{% endif %}>{{ uni.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="college">College *</label>
+            <select id="college" name="college" class="form-control" required>
+                <option value="">Select College</option>
+                {% for col in colleges %}
+                <option value="{{ col.id }}" data-university="{{ col.university_id }}" {% if college_id == col.id|stringformat:'s' %}selected{% endif %}>{{ col.name }} ({{ col.university.name }})</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="name">Program Name *</label>
+            <input type="text" id="name" name="name" class="form-control" 
+                   value="{{ name|default:'' }}" placeholder="e.g., Bachelor of Science in Computer Science" required>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="duration">Duration (years) *</label>
+            <input type="number" id="duration" name="duration" class="form-control" 
+                   value="{{ duration|default:3 }}" min="1" max="10" required>
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <button type="submit" class="btn btn-primary">
+                {% if program %}Update{% else %}Create{% endif %} Program
+            </button>
+            <a href="{% url 'dashboard-programs' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<script>
+function loadColleges(universityId) {
+    const collegeSelect = document.getElementById('college');
+    const options = collegeSelect.querySelectorAll('option');
+    
+    options.forEach(option => {
+        if (option.value === '') {
+            option.style.display = '';
+        } else if (!universityId || option.dataset.university === universityId) {
+            option.style.display = '';
+        } else {
+            option.style.display = 'none';
+        }
+    });
+    
+    // Reset selection if current selection doesn't match university
+    const currentOption = collegeSelect.options[collegeSelect.selectedIndex];
+    if (currentOption && currentOption.dataset.university && currentOption.dataset.university !== universityId) {
+        collegeSelect.value = '';
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const universitySelect = document.getElementById('university');
+    if (universitySelect.value) {
+        loadColleges(universitySelect.value);
+    }
+});
+</script>
+{% endblock %}
+
+

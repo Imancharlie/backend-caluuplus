@@ -1,0 +1,45 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}{{ form_title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">{{ form_title }}</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <a href="{% url 'dashboard-universities' %}">Universities</a>
+            <span>/</span>
+            <span>{{ form_title }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="card" style="max-width: 600px;">
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label class="form-label" for="name">University Name *</label>
+            <input type="text" id="name" name="name" class="form-control" 
+                   value="{{ name|default:'' }}" placeholder="e.g., University of Dar es Salaam" required>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label" for="country">Country</label>
+            <input type="text" id="country" name="country" class="form-control" 
+                   value="{{ country|default:'Tanzania' }}" placeholder="e.g., Tanzania">
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <button type="submit" class="btn btn-primary">
+                {% if university %}Update{% else %}Create{% endif %} University
+            </button>
+            <a href="{% url 'dashboard-universities' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+

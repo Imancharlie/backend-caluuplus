@@ -1,0 +1,69 @@
+{% extends "admin/base_site.html" %}
+
+{% block title %}Backup Dashboard{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Backup &amp; Restore</h1>
+    <p class="help">Manage daily backups, run manual backups, and restore the database if needed.</p>
+
+    <div class="module">
+        <h2>Automatic Backup Settings</h2>
+        <form method="post">
+            {% csrf_token %}
+            {{ settings_form.as_p }}
+            <button type="submit" name="update_settings" class="button default">Save Settings</button>
+        </form>
+    </div>
+
+    <div class="module">
+        <h2>Manual Backup</h2>
+        <form method="post">
+            {% csrf_token %}
+            {{ manual_backup_form.as_p }}
+            <button type="submit" name="trigger_backup" class="button primary">Run Backup Now</button>
+        </form>
+    </div>
+
+    <div class="module">
+        <h2>Restore Backup</h2>
+        <p class="help">Restoring a backup will overwrite the current database. Please ensure you have a copy of the latest data before proceeding.</p>
+        <table class="listing">
+            <thead>
+                <tr>
+                    <th>Created</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Size (MB)</th>
+                    <th>Notes</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for record in records %}
+                <tr>
+                    <td>{{ record.created_at|date:"Y-m-d H:i" }}</td>
+                    <td>{{ record.get_backup_type_display }}</td>
+                    <td>{{ record.get_status_display }}</td>
+                    <td>{% if record.size_mb %}{{ record.size_mb|floatformat:2 }}{% else %}-{% endif %}</td>
+                    <td>{{ record.notes|default:"--" }}</td>
+                    <td>
+                        <form method="post" style="display:inline">
+                            {% csrf_token %}
+                            <input type="hidden" name="backup_id" value="{{ record.id }}">
+                            <label>
+                                <input type="checkbox" name="confirm" required>
+                                Confirm restore
+                            </label>
+                            <button type="submit" name="restore_backup" class="button">Restore</button>
+                        </form>
+                    </td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="6">No backups yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
