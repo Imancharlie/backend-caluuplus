@@ -35,8 +35,14 @@ urlpatterns = [
     path('dashboard/courses/<uuid:course_id>/delete/', admin_views.course_delete, name='dashboard-course-delete'),
     
     # Students
+    path('dashboard/users/', admin_views.user_list, name='dashboard-users'),
+    path('dashboard/users/<uuid:user_id>/', admin_views.user_detail, name='dashboard-user-detail'),
+    path('dashboard/users/<uuid:user_id>/create-student-profile/', admin_views.user_create_student_profile, name='dashboard-user-create-student-profile'),
     path('dashboard/students/', admin_views.student_list, name='dashboard-students'),
     path('dashboard/students/<uuid:student_id>/', admin_views.student_detail, name='dashboard-student-detail'),
+    path('dashboard/students/<uuid:student_id>/selected-courses/add/', admin_views.student_selected_course_add, name='dashboard-student-selected-course-add'),
+    path('dashboard/students/<uuid:student_id>/selected-courses/<int:course_index>/edit/', admin_views.student_selected_course_edit, name='dashboard-student-selected-course-edit'),
+    path('dashboard/students/<uuid:student_id>/selected-courses/<int:course_index>/delete/', admin_views.student_selected_course_delete, name='dashboard-student-selected-course-delete'),
     
     # Import
     path('dashboard/import/', admin_views.import_data, name='dashboard-import'),
@@ -46,6 +52,7 @@ urlpatterns = [
     # AJAX endpoints for dashboard
     path('dashboard/ajax/colleges/', admin_views.ajax_get_colleges, name='dashboard-ajax-colleges'),
     path('dashboard/ajax/programs/', admin_views.ajax_get_programs, name='dashboard-ajax-programs'),
+    path('dashboard/delete-preview/<str:entity>/<uuid:object_id>/', admin_views.delete_impact_preview, name='dashboard-delete-impact-preview'),
     
     # ==========================================================================
     # API Endpoints (REST API)
@@ -113,15 +120,22 @@ urlpatterns = [
     path('timetable-slots/debug-validation/', views.timetable_debug_validation, name='timetable-debug-validation'),
     path('students/<uuid:student_id>/timetable/', views.timetable_my, name='student-timetable'),
     
-    # Article endpoints
-    path('articles/', views.article_list, name='article-list'),
-    path('articles/<uuid:article_id>/', views.article_detail, name='article-detail'),
+    # Article endpoints (public)
+    path('articles/', views.article_list, name='article-list'),  # GET list
+    path('articles/<uuid:article_id>/', views.article_detail, name='article-detail'),  # GET
     path('articles/<uuid:article_id>/view/', views.article_view, name='article-view'),
     path('articles/categories/', views.article_categories, name='article-categories'),
     path('articles/<uuid:article_id>/like/', views.article_like, name='article-like'),
     path('articles/<uuid:article_id>/save/', views.article_save, name='article-save'),
     path('articles/<uuid:article_id>/share/', views.article_share, name='article-share'),
     path('articles/saved/', views.article_saved, name='article-saved'),
+    
+    # Admin Article Management endpoints
+    path('admin/articles/', views.admin_article_create, name='admin-article-create'),  # POST
+    path('admin/articles/<uuid:article_id>/', views.admin_article_detail, name='admin-article-detail'),  # PUT, PATCH, DELETE
+    
+    # Media upload endpoint
+    path('media/articles/upload/', views.article_image_upload, name='article-image-upload'),
     
     # Slide endpoints
     path('slides/', views.slide_list, name='slide-list'),

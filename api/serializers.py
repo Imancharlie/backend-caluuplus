@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
-from .models import User, University, College, Program, Course, Student, StudentCourse, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink
+from django.utils import timezone
+from .models import User, University, College, Program, Course, Student, StudentCourse, Article, Slide, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -10,7 +11,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ('email', 'password', 'password_confirm', 'display_name', 'gender', 'phone_number')
+        fields = ('email', 'password', 'password_confirm', 'display_name', 'is_student', 'phone_number')
     
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
@@ -46,8 +47,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                 # Update other fields if provided
                 if 'display_name' in validated_data:
                     existing_user.display_name = validated_data['display_name']
-                if 'gender' in validated_data:
-                    existing_user.gender = validated_data['gender']
+                if 'is_student' in validated_data:
+                    existing_user.is_student = validated_data['is_student']
                 if 'phone_number' in validated_data:
                     existing_user.phone_number = validated_data['phone_number']
                 existing_user.save()
@@ -85,13 +86,13 @@ class UserLoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ('id', 'email', 'display_name', 'gender', 'phone_number')
+        fields = ('id', 'email', 'display_name', 'is_student', 'phone_number')
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ('email', 'display_name', 'phone_number')
+        fields = ('email', 'display_name', 'is_student', 'phone_number')
 
     def validate_email(self, value):
         user = self.context['request'].user
@@ -221,10 +222,31 @@ class TargetGPASerializer(serializers.Serializer):
 
 
 class GPACalculationSerializer(serializers.Serializer):
-    gpa = serializers.DecimalField(max_digits=3, decimal_places=2, min_value=0.0, max_value=5.0)
+    # Preferred input: plaintext gpa (backend will encrypt automatically)
+    gpa = serializers.DecimalField(required=False, max_digits=3, decimal_places=2, min_value=0.0, max_value=5.0)
+    # Backward-compatible encrypted payload input (optional)
+    gpa_ciphertext = serializers.CharField(required=False, allow_blank=True)
+    gpa_iv = serializers.CharField(required=False, allow_blank=True)
+    gpa_salt = serializers.CharField(required=False, allow_blank=True)
+    gpa_alg = serializers.CharField(required=False, allow_blank=True, default='AES-GCM-PBKDF2')
     semester = serializers.IntegerField(min_value=1, max_value=2)
     academic_year = serializers.IntegerField(min_value=1)
     is_target = serializers.BooleanField(default=False)
+
+    def validate(self, attrs):
+        has_plain = attrs.get('gpa') is not None
+        has_encrypted = all(
+            attrs.get(key) is not None and str(attrs.get(key)).strip() != ''
+            for key in ('gpa_ciphertext', 'gpa_iv', 'gpa_salt')
+        )
+        if not has_plain and not has_encrypted:
+            raise serializers.ValidationError(
+                "Provide either 'gpa' for automatic server-side encryption, "
+                "or encrypted fields: gpa_ciphertext, gpa_iv, gpa_salt."
+            )
+
+        attrs['gpa_alg'] = (attrs.get('gpa_alg') or 'AES-GCM-PBKDF2').strip() or 'AES-GCM-PBKDF2'
+        return attrs
 
 
 
@@ -252,6 +274,72 @@ class CourseAddSerializer(serializers.Serializer):
                 "Either 'course_id' must be provided, or all of 'code', 'name', 'credits', 'semester', and 'year' must be provided."
             )
         return data
+
+
+class ArticleSerializer(serializers.ModelSerializer):
+    category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    class Meta:
+        model = Article
+        fields = (
+            'id', 'title', 'content', 'excerpt', 'author', 'category', 'tags',
+            'cover_image', 'is_published', 'is_featured', 'status',
+            'views', 'likes', 'read_time', 'share_count',
+            'created_at', 'updated_at', 'published_at'
+        )
+        read_only_fields = ('id', 'author', 'views', 'likes', 'share_count', 'created_at', 'updated_at')
+
+    def validate_category(self, value):
+        """
+        Normalize and validate category:
+        - null/blank -> general
+        - normalize casing/whitespace
+        - enforce enum membership
+        """
+        if value is None or str(value).strip() == '':
+            return 'general'
+
+        normalized = str(value).strip().lower()
+        allowed_values = {choice for choice, _label in Article._meta.get_field('category').choices}
+        if normalized not in allowed_values:
+            raise serializers.ValidationError(
+                f"Invalid category '{value}'. Allowed values: {', '.join(sorted(allowed_values))}."
+            )
+        return normalized
+
+    def validate(self, attrs):
+        # Ensure create requests can omit category and still persist safely.
+        if self.instance is None and not attrs.get('category'):
+            attrs['category'] = 'general'
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            validated_data['author'] = request.user
+        if validated_data.get('is_published') and not validated_data.get('published_at'):
+            validated_data['published_at'] = timezone.now()
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        is_published = validated_data.get('is_published')
+        if is_published is True and not instance.published_at and not validated_data.get('published_at'):
+            validated_data['published_at'] = timezone.now()
+        return super().update(instance, validated_data)
+
+
+class SlideSerializer(serializers.ModelSerializer):
+    image_display = serializers.ReadOnlyField()
+
+    class Meta:
+        model = Slide
+        fields = (
+            'id', 'title', 'description', 'image', 'image_url', 'image_display',
+            'link_url', 'button_text', 'background_gradient', 'slide_type',
+            'is_active', 'order', 'start_date', 'end_date',
+            'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'image_display', 'created_at', 'updated_at')
 
 
 class HelpMessageSerializer(serializers.ModelSerializer):

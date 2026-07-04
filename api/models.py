@@ -32,7 +32,7 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     display_name = models.CharField(max_length=100)
     username = models.CharField(max_length=150, unique=True, blank=True, null=True)
-    gender = models.CharField(max_length=10, choices=[('male', 'Male'), ('female', 'Female'), ('other', 'Other')], blank=True, null=True)
+    is_student = models.BooleanField(default=True)
     phone_number = models.CharField(max_length=20, blank=True, null=True)
     firebase_uid = models.CharField(max_length=128, blank=True, null=True, unique=True)
     profile_picture = models.URLField(max_length=500, blank=True, null=True)
@@ -522,10 +522,13 @@ class UniversityLink(models.Model):
 
 
 class GPACalculation(models.Model):
-    """Store GPA calculations for users"""
+    """Store encrypted GPA calculation events for users"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='gpa_calculations')
-    gpa = models.DecimalField(max_digits=3, decimal_places=2, help_text="GPA value")
+    gpa_ciphertext = models.TextField(help_text="Encrypted GPA payload (base64 ciphertext)", default='', null=True, blank=True)
+    gpa_iv = models.CharField(max_length=64, help_text="Base64 IV/nonce used for encryption", default='', null=True, blank=True)
+    gpa_salt = models.CharField(max_length=128, help_text="Base64 salt used for key derivation", default='', null=True, blank=True)
+    gpa_alg = models.CharField(max_length=50, default='AES-GCM-PBKDF2', help_text="Client-side encryption algorithm metadata", null=True, blank=True)
     semester = models.IntegerField(help_text="Semester number (1 or 2)")
     academic_year = models.IntegerField(help_text="Academic year (1, 2, 3, etc.)")
     is_target = models.BooleanField(default=False, help_text="True if this is a target GPA calculation")
@@ -542,7 +545,7 @@ class GPACalculation(models.Model):
     
     def __str__(self):
         gpa_type = "Target" if self.is_target else "Actual"
-        return f"{self.user.display_name} - {gpa_type} GPA: {self.gpa} (Sem {self.semester}, Year {self.academic_year})"
+        return f"{self.user.display_name} - {gpa_type} GPA event (encrypted) (Sem {self.semester}, Year {self.academic_year})"
 
 
 class LoginActivity(models.Model):

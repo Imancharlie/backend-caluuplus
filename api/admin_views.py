@@ -15,6 +15,7 @@ All views support both Django session authentication and JWT authentication.
 import os
 import uuid
 import logging
+import json
 import pandas as pd
 from functools import wraps
 
@@ -38,6 +39,7 @@ from .models import (
     Program,
     Course,
     Student,
+    StudentCourse,
     User,
     GPACalculation,
     LoginActivity,
@@ -50,6 +52,25 @@ from django.db.models.functions import TruncDate, TruncMonth
 logger = logging.getLogger(__name__)
 
 
+def _safe_int(value, default):
+    """Parse int safely with fallback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _course_ref_count(course_id):
+    """Count StudentCourse JSON entries referencing a given course id."""
+    target = str(course_id)
+    count = 0
+    for sc in StudentCourse.objects.only('id', 'courses'):
+        courses = sc.courses or []
+        if any(str(item.get('id')) == target for item in courses if isinstance(item, dict)):
+            count += 1
+    return count
+
+
 # =============================================================================
 # Authentication Decorator (supports both session and JWT)
 # =============================================================================
@@ -57,7 +78,7 @@ logger = logging.getLogger(__name__)
 def admin_required(view_func):
     """
     Decorator that checks for either Django session auth or JWT token.
-    Ensures user is admin (is_staff or is_superuser).
+    Ensures user is superuser.
     """
     @wraps(view_func)
     def wrapper(request, *args, **kwargs):
@@ -81,8 +102,8 @@ def admin_required(view_func):
         if not user:
             return redirect('dashboard-login')
         
-        if not (user.is_staff or user.is_superuser):
-            messages.error(request, 'You do not have permission to access this page.')
+        if not user.is_superuser:
+            messages.error(request, 'You do not have permission to access this page. Only superusers can access the admin dashboard.')
             return redirect('dashboard-login')
         
         return view_func(request, *args, **kwargs)
@@ -120,7 +141,7 @@ def record_login_activity(user, request, login_type='email', success=True):
 
 def dashboard_login(request):
     """Login view for admin dashboard"""
-    if request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser):
+    if request.user.is_authenticated and request.user.is_superuser:
         return redirect('dashboard-home')
     
     if request.method == 'POST':
@@ -130,7 +151,7 @@ def dashboard_login(request):
         user = authenticate(request, username=email, password=password)
         
         if user is not None:
-            if user.is_staff or user.is_superuser:
+            if user.is_superuser:
                 login(request, user)
                 # Record login activity
                 record_login_activity(user, request, login_type='admin', success=True)
@@ -138,7 +159,7 @@ def dashboard_login(request):
                 return redirect('dashboard-home')
             else:
                 return render(request, 'dashboard/login.html', {
-                    'error': 'You do not have admin privileges.'
+                    'error': 'You do not have admin privileges. Only superusers can access the admin dashboard.'
                 })
         else:
             return render(request, 'dashboard/login.html', {
@@ -219,14 +240,15 @@ def dashboard_home(request):
             'count': count
         })
     
-    # GPA calculations by program (top 7)
+    # GPA calculations by program (top 7) - count actual calculation instances
     gpa_by_program = []
-    programs_with_students = Program.objects.annotate(
-        student_count=Count('students')
-    ).filter(student_count__gt=0)[:7]
+    # Get all programs that have students with GPA calculations
+    programs_with_calculations = Program.objects.filter(
+        students__user__gpa_calculations__isnull=False
+    ).distinct()
     
-    for program in programs_with_students:
-        # Get GPA calculations for students in this program
+    for program in programs_with_calculations:
+        # Get all GPA calculations for students in this program
         student_ids = program.students.values_list('user_id', flat=True)
         gpa_count = GPACalculation.objects.filter(user_id__in=student_ids).count()
         
@@ -235,8 +257,9 @@ def dashboard_home(request):
             'count': gpa_count,
         })
     
-    # Sort by count
+    # Sort by count and take top 7
     gpa_by_program.sort(key=lambda x: x['count'], reverse=True)
+    gpa_by_program = gpa_by_program[:7]
     
     # GPA calculations by academic year (1, 2, 3, 4)
     gpa_by_year = []
@@ -288,6 +311,66 @@ def dashboard_home(request):
     recent_gpa_calculations = GPACalculation.objects.select_related('user').order_by('-created_at')[:5]
     recent_logins = LoginActivity.objects.select_related('user').order_by('-login_time')[:5]
     recent_students = Student.objects.select_related('user', 'university', 'program').order_by('-created_at')[:5]
+
+    # =========================================================================
+    # Top Users + Per-User Activity Timeline
+    # =========================================================================
+    activity_days = _safe_int(request.GET.get('activity_days'), 30)
+    if activity_days not in (7, 30, 90):
+        activity_days = 30
+    activity_start = now - timedelta(days=activity_days - 1)
+
+    top_users = []
+    for user in User.objects.order_by('-date_joined')[:200]:
+        login_count = LoginActivity.objects.filter(
+            user=user,
+            login_time__gte=activity_start
+        ).count()
+        gpa_count = GPACalculation.objects.filter(
+            user=user,
+            created_at__gte=activity_start
+        ).count()
+        total_activity = login_count + gpa_count
+        if total_activity > 0:
+            top_users.append({
+                'id': str(user.id),
+                'display_name': user.display_name,
+                'email': user.email,
+                'login_count': login_count,
+                'gpa_count': gpa_count,
+                'total_activity': total_activity,
+                'has_student_profile': hasattr(user, 'student_profile'),
+            })
+    top_users.sort(key=lambda item: item['total_activity'], reverse=True)
+    top_users = top_users[:10]
+
+    selected_activity_user = None
+    selected_activity_user_id = request.GET.get('activity_user')
+    if selected_activity_user_id:
+        selected_activity_user = User.objects.filter(id=selected_activity_user_id).first()
+    if selected_activity_user is None and top_users:
+        selected_activity_user = User.objects.filter(id=top_users[0]['id']).first()
+    if selected_activity_user is None:
+        selected_activity_user = User.objects.order_by('-date_joined').first()
+
+    user_activity_timeline = []
+    if selected_activity_user:
+        for i in range(activity_days - 1, -1, -1):
+            date = today - timedelta(days=i)
+            login_count = LoginActivity.objects.filter(
+                user=selected_activity_user,
+                login_time__date=date
+            ).count()
+            gpa_count = GPACalculation.objects.filter(
+                user=selected_activity_user,
+                created_at__date=date
+            ).count()
+            user_activity_timeline.append({
+                'date': date.strftime('%b %d'),
+                'logins': login_count,
+                'gpa': gpa_count,
+                'total': login_count + gpa_count,
+            })
     
     # =========================================================================
     # Trend Calculations
@@ -333,19 +416,24 @@ def dashboard_home(request):
         'login_growth_percent': login_growth_percent,
         
         # Chart data (JSON)
-        'user_growth_data': user_growth_data,
-        'gpa_usage_data': gpa_usage_data,
-        'gpa_by_program': gpa_by_program,
-        'gpa_by_year': gpa_by_year,
-        'students_by_college': list(students_by_college),
-        'students_by_program': list(students_by_program),
-        'login_activity_data': login_activity_data,
+        'user_growth_data': json.dumps(user_growth_data),
+        'gpa_usage_data': json.dumps(gpa_usage_data),
+        'gpa_by_program': json.dumps(gpa_by_program),
+        'gpa_by_year': json.dumps(gpa_by_year),
+        'students_by_college': json.dumps(list(students_by_college)),
+        'students_by_program': json.dumps(list(students_by_program)),
+        'login_activity_data': json.dumps(login_activity_data),
+        'user_activity_timeline': json.dumps(user_activity_timeline),
         
         # Recent activity
         'recent_users': recent_users,
         'recent_gpa_calculations': recent_gpa_calculations,
         'recent_logins': recent_logins,
         'recent_students': recent_students,
+        'top_users': top_users,
+        'activity_days': activity_days,
+        'selected_activity_user': selected_activity_user,
+        'activity_users': User.objects.order_by('display_name')[:200],
     }
     
     return render(request, 'dashboard/dashboard.html', context)
@@ -361,9 +449,9 @@ def university_list(request):
     search = request.GET.get('search', '').strip()
     
     universities = University.objects.annotate(
-        college_count=Count('colleges'),
-        program_count=Count('colleges__programs'),
-        student_count=Count('students')
+        college_count=Count('colleges', distinct=True),
+        program_count=Count('colleges__programs', distinct=True),
+        student_count=Count('students', distinct=True)
     ).order_by('-created_at')
     
     if search:
@@ -496,8 +584,8 @@ def college_list(request):
     university_filter = request.GET.get('university', '')
     
     colleges = College.objects.select_related('university').annotate(
-        program_count=Count('programs'),
-        student_count=Count('students')
+        program_count=Count('programs', distinct=True),
+        student_count=Count('students', distinct=True)
     ).order_by('university__name', 'name')
     
     if search:
@@ -648,8 +736,8 @@ def program_list(request):
     college_filter = request.GET.get('college', '')
     
     programs = Program.objects.select_related('college__university').annotate(
-        course_count=Count('courses'),
-        student_count=Count('students')
+        course_count=Count('courses', distinct=True),
+        student_count=Count('students', distinct=True)
     ).order_by('college__university__name', 'college__name', 'name')
     
     if search:
@@ -1161,18 +1249,312 @@ def student_list(request):
 
 @admin_required
 def student_detail(request, student_id):
-    """View student details"""
+    """View student details and selected courses."""
     student = get_object_or_404(
         Student.objects.select_related('user', 'university', 'college', 'program'),
         id=student_id
     )
+    student_course = StudentCourse.objects.filter(student=student).first()
+    selected_courses = (student_course.courses if student_course else []) or []
+    selected_courses_count = len(selected_courses)
     
     context = {
         'active_page': 'students',
         'student': student,
+        'student_course': student_course,
+        'selected_courses': selected_courses,
+        'selected_courses_count': selected_courses_count,
     }
     
     return render(request, 'dashboard/students/detail.html', context)
+
+
+# =============================================================================
+# User Management Views
+# =============================================================================
+
+@admin_required
+def user_list(request):
+    """List all users including those without student profiles."""
+    search = request.GET.get('search', '').strip()
+    role_filter = request.GET.get('role', '')
+    profile_filter = request.GET.get('profile', '')
+
+    users = User.objects.annotate(
+        student_profile_count=Count('student_profile')
+    ).order_by('-date_joined')
+
+    if search:
+        users = users.filter(
+            Q(display_name__icontains=search) |
+            Q(email__icontains=search) |
+            Q(phone_number__icontains=search)
+        )
+
+    if role_filter == 'student':
+        users = users.filter(is_student=True)
+    elif role_filter == 'non_student':
+        users = users.filter(is_student=False)
+
+    if profile_filter == 'has_profile':
+        users = users.filter(student_profile_count__gt=0)
+    elif profile_filter == 'no_profile':
+        users = users.filter(student_profile_count=0)
+
+    paginator = Paginator(users, 20)
+    page = request.GET.get('page', 1)
+    users = paginator.get_page(page)
+
+    context = {
+        'active_page': 'users',
+        'users': users,
+        'search': search,
+        'role_filter': role_filter,
+        'profile_filter': profile_filter,
+    }
+    return render(request, 'dashboard/users/list.html', context)
+
+
+@admin_required
+def user_detail(request, user_id):
+    """Show user details, profile status, and recent activity."""
+    profile_user = get_object_or_404(User, id=user_id)
+    student_profile = Student.objects.select_related(
+        'university', 'college', 'program'
+    ).filter(user=profile_user).first()
+    student_course = StudentCourse.objects.filter(student=student_profile).first() if student_profile else None
+    selected_courses = (student_course.courses if student_course else []) or []
+
+    recent_logins = LoginActivity.objects.filter(user=profile_user).order_by('-login_time')[:20]
+    recent_gpa_usage = GPACalculation.objects.filter(user=profile_user).order_by('-created_at')[:20]
+    total_login_events = LoginActivity.objects.filter(user=profile_user).count()
+    total_gpa_usage_events = GPACalculation.objects.filter(user=profile_user).count()
+    activity_days = _safe_int(request.GET.get('activity_days'), 30)
+    if activity_days not in (7, 30, 90):
+        activity_days = 30
+    today = timezone.now().date()
+    user_activity_timeline = []
+    for i in range(activity_days - 1, -1, -1):
+        date = today - timedelta(days=i)
+        login_count = LoginActivity.objects.filter(
+            user=profile_user,
+            login_time__date=date
+        ).count()
+        gpa_usage_count = GPACalculation.objects.filter(
+            user=profile_user,
+            created_at__date=date
+        ).count()
+        user_activity_timeline.append({
+            'date': date.strftime('%b %d'),
+            'logins': login_count,
+            'gpa_usage': gpa_usage_count,
+            'total_usage': login_count + gpa_usage_count,
+        })
+
+    universities = University.objects.all().order_by('name')
+    colleges = College.objects.select_related('university').all().order_by('university__name', 'name')
+    programs = Program.objects.select_related('college__university').all().order_by('college__university__name', 'name')
+
+    context = {
+        'active_page': 'users',
+        'profile_user': profile_user,
+        'student_profile': student_profile,
+        'student_course': student_course,
+        'selected_courses': selected_courses,
+        'recent_logins': recent_logins,
+        'recent_gpa_usage': recent_gpa_usage,
+        'activity_days': activity_days,
+        'user_activity_timeline': json.dumps(user_activity_timeline),
+        'total_login_events': total_login_events,
+        'total_gpa_usage_events': total_gpa_usage_events,
+        'universities': universities,
+        'colleges': colleges,
+        'programs': programs,
+    }
+    return render(request, 'dashboard/users/detail.html', context)
+
+
+@admin_required
+@require_http_methods(["POST"])
+def user_create_student_profile(request, user_id):
+    """Create student profile for a user that does not have one yet."""
+    profile_user = get_object_or_404(User, id=user_id)
+    if hasattr(profile_user, 'student_profile'):
+        messages.warning(request, 'This user already has a student profile.')
+        return redirect('dashboard-user-detail', user_id=user_id)
+
+    university_id = request.POST.get('university', '').strip()
+    college_id = request.POST.get('college', '').strip()
+    program_id = request.POST.get('program', '').strip()
+    year = _safe_int(request.POST.get('year'), 0)
+    semester = _safe_int(request.POST.get('semester'), 0)
+
+    if not all([university_id, college_id, program_id]) or year < 1 or semester < 1:
+        messages.error(request, 'University, college, program, year, and semester are required.')
+        return redirect('dashboard-user-detail', user_id=user_id)
+
+    university = get_object_or_404(University, id=university_id)
+    college = get_object_or_404(College, id=college_id)
+    program = get_object_or_404(Program, id=program_id)
+
+    if college.university_id != university.id or program.college_id != college.id:
+        messages.error(request, 'Selected university/college/program combination is invalid.')
+        return redirect('dashboard-user-detail', user_id=user_id)
+
+    Student.objects.create(
+        user=profile_user,
+        university=university,
+        college=college,
+        program=program,
+        year=year,
+        semester=semester,
+    )
+    if not profile_user.is_student:
+        profile_user.is_student = True
+        profile_user.save(update_fields=['is_student'])
+
+    messages.success(request, f'Student profile created for {profile_user.display_name}.')
+    return redirect('dashboard-user-detail', user_id=user_id)
+
+
+# =============================================================================
+# Student Selected Courses (Dashboard CRUD)
+# =============================================================================
+
+def _normalize_student_course_payload(form_data):
+    """Normalize selected-course payload posted from dashboard forms."""
+    course_id = form_data.get('course_id', '').strip() or str(uuid.uuid4())
+    code = form_data.get('code', '').strip()
+    name = form_data.get('name', '').strip()
+    credits = _safe_int(form_data.get('credits'), 0)
+    course_type = form_data.get('type', 'core').strip() or 'core'
+    semester = _safe_int(form_data.get('semester'), 1)
+    year = _safe_int(form_data.get('year'), 1)
+    return {
+        'id': course_id,
+        'code': code,
+        'name': name,
+        'credits': credits,
+        'type': 'elective' if course_type == 'elective' else 'core',
+        'semester': semester,
+        'year': year,
+        'added_at': timezone.now().isoformat(),
+    }
+
+
+@admin_required
+@require_http_methods(["POST"])
+def student_selected_course_add(request, student_id):
+    student = get_object_or_404(Student, id=student_id)
+    student_course, _ = StudentCourse.objects.get_or_create(student=student)
+    payload = _normalize_student_course_payload(request.POST)
+    if not payload['code'] or not payload['name']:
+        messages.error(request, 'Course code and course name are required.')
+        return redirect('dashboard-student-detail', student_id=student_id)
+
+    courses = list(student_course.courses or [])
+    courses.append(payload)
+    student_course.courses = courses
+    student_course.save()
+    messages.success(request, 'Selected course added successfully.')
+    return redirect('dashboard-student-detail', student_id=student_id)
+
+
+@admin_required
+@require_http_methods(["POST"])
+def student_selected_course_edit(request, student_id, course_index):
+    student = get_object_or_404(Student, id=student_id)
+    student_course = get_object_or_404(StudentCourse, student=student)
+    courses = list(student_course.courses or [])
+    if course_index < 0 or course_index >= len(courses):
+        messages.error(request, 'Selected course index is invalid.')
+        return redirect('dashboard-student-detail', student_id=student_id)
+
+    existing_id = str((courses[course_index] or {}).get('id') or '')
+    payload = _normalize_student_course_payload(request.POST)
+    if existing_id:
+        payload['id'] = existing_id
+    if not payload['code'] or not payload['name']:
+        messages.error(request, 'Course code and course name are required.')
+        return redirect('dashboard-student-detail', student_id=student_id)
+
+    courses[course_index] = payload
+    student_course.courses = courses
+    student_course.save()
+    messages.success(request, 'Selected course updated successfully.')
+    return redirect('dashboard-student-detail', student_id=student_id)
+
+
+@admin_required
+@require_http_methods(["POST"])
+def student_selected_course_delete(request, student_id, course_index):
+    student = get_object_or_404(Student, id=student_id)
+    student_course = get_object_or_404(StudentCourse, student=student)
+    courses = list(student_course.courses or [])
+    if course_index < 0 or course_index >= len(courses):
+        messages.error(request, 'Selected course index is invalid.')
+        return redirect('dashboard-student-detail', student_id=student_id)
+
+    removed = courses.pop(course_index)
+    student_course.courses = courses
+    student_course.save()
+    removed_code = (removed or {}).get('code', 'course')
+    messages.success(request, f'Selected course "{removed_code}" removed successfully.')
+    return redirect('dashboard-student-detail', student_id=student_id)
+
+
+# =============================================================================
+# Delete Impact Preview (Dashboard)
+# =============================================================================
+
+@admin_required
+@require_http_methods(["GET"])
+def delete_impact_preview(request, entity, object_id):
+    impacts = []
+    label = ''
+
+    if entity == 'university':
+        obj = get_object_or_404(University, id=object_id)
+        label = obj.name
+        impacts = [
+            {'label': 'Colleges', 'count': College.objects.filter(university=obj).count()},
+            {'label': 'Programs', 'count': Program.objects.filter(college__university=obj).count()},
+            {'label': 'Courses', 'count': Course.objects.filter(program__college__university=obj).count()},
+            {'label': 'Student profiles', 'count': Student.objects.filter(university=obj).count()},
+            {'label': 'Selected course sets', 'count': StudentCourse.objects.filter(student__university=obj).count()},
+        ]
+    elif entity == 'college':
+        obj = get_object_or_404(College, id=object_id)
+        label = obj.name
+        impacts = [
+            {'label': 'Programs', 'count': Program.objects.filter(college=obj).count()},
+            {'label': 'Courses', 'count': Course.objects.filter(program__college=obj).count()},
+            {'label': 'Student profiles', 'count': Student.objects.filter(college=obj).count()},
+            {'label': 'Selected course sets', 'count': StudentCourse.objects.filter(student__college=obj).count()},
+        ]
+    elif entity == 'program':
+        obj = get_object_or_404(Program, id=object_id)
+        label = obj.name
+        impacts = [
+            {'label': 'Courses', 'count': Course.objects.filter(program=obj).count()},
+            {'label': 'Student profiles', 'count': Student.objects.filter(program=obj).count()},
+            {'label': 'Selected course sets', 'count': StudentCourse.objects.filter(student__program=obj).count()},
+        ]
+    elif entity == 'course':
+        obj = get_object_or_404(Course, id=object_id)
+        label = f"{obj.code} - {obj.name}"
+        impacts = [
+            {'label': 'Timetable slots affected', 'count': obj.timetable_slots.count()},
+            {'label': 'Student selected-course references', 'count': _course_ref_count(obj.id)},
+        ]
+    else:
+        return JsonResponse({'error': 'Unsupported entity'}, status=400)
+
+    return JsonResponse({
+        'entity': entity,
+        'label': label,
+        'impacts': impacts,
+    })
 
 
 # =============================================================================

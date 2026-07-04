@@ -12,14 +12,14 @@ from .utils import perform_backup, restore_backup
 
 
 class AdminRequiredMixin(UserPassesTestMixin):
-    """Allow only staff or superusers."""
+    """Allow only superusers."""
 
     def test_func(self):
         user = self.request.user
-        return user.is_staff or user.is_superuser
+        return user.is_superuser
 
     def handle_no_permission(self):
-        messages.error(self.request, "You do not have permission to access backups.")
+        messages.error(self.request, "You do not have permission to access backups. Only superusers can access this page.")
         return redirect("/login")
 
 

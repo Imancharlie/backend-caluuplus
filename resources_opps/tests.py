@@ -508,3 +508,84 @@ class OpportunityAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['results']), 0)
+
+    def test_create_with_empty_optional_fields(self):
+        """Frontend often sends empty strings for optional fields in FormData."""
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            '/api/resources_opps/opportunities/',
+            {
+                **self.opportunity_data,
+                'application_url': '',
+                'start_date': '',
+                'end_date': '',
+            },
+            content_type='application/json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_create_with_description_alias(self):
+        """Accept description as an alias for content."""
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            '/api/resources_opps/opportunities/',
+            {
+                'university': self.university.id,
+                'category': 'seminar',
+                'title': 'Alias Test',
+                'description': 'Submitted via description field.',
+            },
+            content_type='application/json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['content'], 'Submitted via description field.')
+
+    def test_create_with_normalized_category(self):
+        """Accept human-readable category labels from frontend selects."""
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            '/api/resources_opps/opportunities/',
+            {
+                **self.opportunity_data,
+                'category': 'Online Course',
+                'title': 'Category Label Test',
+            },
+            content_type='application/json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['category'], 'online_course')
+
+    def test_create_without_university_uses_student_profile(self):
+        """Auto-fill university from the authenticated student's profile."""
+        from api.models import College, Program, Student
+
+        college = College.objects.create(name='Test College', university=self.university)
+        program = Program.objects.create(name='Test Program', college=college, duration=4)
+        Student.objects.create(
+            user=self.user,
+            university=self.university,
+            college=college,
+            program=program,
+            year=1,
+            semester=1,
+        )
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            '/api/resources_opps/opportunities/',
+            {
+                'category': 'seminar',
+                'title': 'Auto University Test',
+                'content': 'University should be inferred from profile.',
+            },
+            content_type='application/json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(str(response.data['university']), str(self.university.id))

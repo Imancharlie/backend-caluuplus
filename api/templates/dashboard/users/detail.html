@@ -1,0 +1,234 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}User Details{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">User Details</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <a href="{% url 'dashboard-users' %}">Users</a>
+            <span>/</span>
+            <span>{{ profile_user.display_name }}</span>
+        </div>
+    </div>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a href="#user-activity" class="btn btn-primary">View Activity</a>
+        <a href="{% url 'dashboard-users' %}" class="btn btn-secondary">Back to Users</a>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Account Information</h3>
+        </div>
+        <table style="width: 100%;">
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Name</td><td>{{ profile_user.display_name }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Email</td><td>{{ profile_user.email }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Role</td><td>{% if profile_user.is_student %}Student{% else %}Non-student{% endif %}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Phone</td><td>{{ profile_user.phone_number|default:"Not provided" }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Joined</td><td>{{ profile_user.date_joined|date:"M d, Y H:i" }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Last Login</td><td>{{ profile_user.last_login|date:"M d, Y H:i"|default:"Never" }}</td></tr>
+        </table>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Student Profile</h3>
+        </div>
+        {% if student_profile %}
+        <table style="width: 100%;">
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">University</td><td>{{ student_profile.university.name }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">College</td><td>{{ student_profile.college.name }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Program</td><td>{{ student_profile.program.name }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Year</td><td>{{ student_profile.year }}</td></tr>
+            <tr><td style="color: var(--text-muted); padding: 0.5rem 0;">Semester</td><td>{{ student_profile.semester }}</td></tr>
+        </table>
+        <a href="{% url 'dashboard-student-detail' student_profile.id %}" class="btn btn-secondary" style="margin-top: 1rem;">Open Student Detail</a>
+        {% else %}
+        <p style="margin-bottom: 0.75rem;">No student profile exists for this user yet.</p>
+        <form method="post" action="{% url 'dashboard-user-create-student-profile' profile_user.id %}">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">University</label>
+                <select name="university" class="form-control" required>
+                    <option value="">Select university</option>
+                    {% for university in universities %}
+                    <option value="{{ university.id }}">{{ university.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">College</label>
+                <select name="college" class="form-control" required>
+                    <option value="">Select college</option>
+                    {% for college in colleges %}
+                    <option value="{{ college.id }}">{{ college.university.name }} - {{ college.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Program</label>
+                <select name="program" class="form-control" required>
+                    <option value="">Select program</option>
+                    {% for program in programs %}
+                    <option value="{{ program.id }}">{{ program.college.university.name }} - {{ program.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label class="form-label">Year</label>
+                    <input type="number" name="year" class="form-control" min="1" max="8" value="1" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Semester</label>
+                    <input type="number" name="semester" class="form-control" min="1" max="3" value="1" required>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Student Profile</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <div class="card-header"><h3 class="card-title">Recent Login Activity</h3></div>
+        {% if recent_logins %}
+        <div class="table-container">
+            <table>
+                <thead><tr><th>Type</th><th>Time</th><th>Status</th></tr></thead>
+                <tbody>
+                    {% for login in recent_logins %}
+                    <tr>
+                        <td><span class="badge badge-primary">{{ login.login_type }}</span></td>
+                        <td>{{ login.login_time|date:"M d, Y H:i" }}</td>
+                        <td>{% if login.success %}<span class="badge badge-success">Success</span>{% else %}<span class="badge badge-danger">Failed</span>{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><p>No login activity yet.</p></div>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <div class="card-header"><h3 class="card-title">Recent GPA Usage Events</h3></div>
+        {% if recent_gpa_usage %}
+        <div class="table-container">
+            <table>
+                <thead><tr><th>Usage Event</th><th>Time</th></tr></thead>
+                <tbody>
+                    {% for row in recent_gpa_usage %}
+                    <tr>
+                        <td><span class="badge badge-warning">GPA Tool Used</span></td>
+                        <td>{{ row.created_at|date:"M d, Y H:i" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state"><p>No GPA usage yet.</p></div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card" id="user-activity">
+    <div class="card-header">
+        <h3 class="card-title">User Activity Trend ({{ activity_days }} days)</h3>
+        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+            <span class="badge badge-success">Login events: {{ total_login_events }}</span>
+            <span class="badge badge-warning">GPA usage events: {{ total_gpa_usage_events }}</span>
+        </div>
+    </div>
+    <form method="get" class="toolbar" style="margin-bottom: 0.5rem;">
+        <select name="activity_days" class="form-control" style="max-width: 140px;">
+            <option value="7" {% if activity_days == 7 %}selected{% endif %}>7 days</option>
+            <option value="30" {% if activity_days == 30 %}selected{% endif %}>30 days</option>
+            <option value="90" {% if activity_days == 90 %}selected{% endif %}>90 days</option>
+        </select>
+        <button type="submit" class="btn btn-secondary">Apply</button>
+    </form>
+    <div class="chart-container" style="height: 280px;">
+        <canvas id="userActivityTrendChart"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const userActivityTimeline = {{ user_activity_timeline|safe }};
+const userActivityCtx = document.getElementById('userActivityTrendChart').getContext('2d');
+
+const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+const chartColors = {
+    text: isDark ? '#a0a0b5' : '#4a5568',
+    grid: isDark ? '#2a2a40' : '#e1e8ed',
+    accent: '#00bfff',
+    accentLight: isDark ? 'rgba(0, 191, 255, 0.2)' : 'rgba(0, 191, 255, 0.15)',
+    success: '#00d9a5',
+    warning: '#ffc107'
+};
+
+Chart.defaults.color = chartColors.text;
+Chart.defaults.borderColor = chartColors.grid;
+
+new Chart(userActivityCtx, {
+    type: 'line',
+    data: {
+        labels: userActivityTimeline.map(item => item.date),
+        datasets: [
+            {
+                label: 'Total Usage',
+                data: userActivityTimeline.map(item => item.total_usage),
+                borderColor: chartColors.accent,
+                backgroundColor: chartColors.accentLight,
+                fill: true,
+                tension: 0.35,
+                pointRadius: 2
+            },
+            {
+                label: 'Logins',
+                data: userActivityTimeline.map(item => item.logins),
+                borderColor: chartColors.success,
+                backgroundColor: 'transparent',
+                tension: 0.35,
+                borderDash: [6, 4],
+                pointRadius: 0
+            },
+            {
+                label: 'GPA Usage',
+                data: userActivityTimeline.map(item => item.gpa_usage),
+                borderColor: chartColors.warning,
+                backgroundColor: 'transparent',
+                tension: 0.35,
+                borderDash: [3, 3],
+                pointRadius: 0
+            }
+        ]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: {
+                beginAtZero: true,
+                grid: { color: chartColors.grid }
+            },
+            x: {
+                grid: { display: false },
+                ticks: { maxTicksLimit: 12, font: { size: 10 } }
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

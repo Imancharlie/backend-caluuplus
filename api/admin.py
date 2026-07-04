@@ -5,14 +5,14 @@ from .models import User, University, College, Program, Course, Student, Student
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    list_display = ('email', 'display_name', 'gender', 'phone_number', 'hobbies_display', 'is_staff', 'is_active')
-    list_filter = ('is_staff', 'is_active', 'gender', 'date_joined')
+    list_display = ('email', 'display_name', 'is_student', 'phone_number', 'hobbies_display', 'is_staff', 'is_active')
+    list_filter = ('is_staff', 'is_active', 'is_student', 'date_joined')
     search_fields = ('email', 'display_name', 'phone_number')
     ordering = ('email',)
     
     fieldsets = (
         (None, {'fields': ('email', 'password')}),
-        ('Personal info', {'fields': ('display_name', 'first_name', 'last_name', 'gender', 'phone_number', 'hobbies')}),
+        ('Personal info', {'fields': ('display_name', 'first_name', 'last_name', 'is_student', 'phone_number', 'hobbies')}),
         ('Permissions', {'fields': ('is_active', 'is_staff', 'is_superuser', 'groups', 'user_permissions')}),
         ('Important dates', {'fields': ('last_login', 'date_joined')}),
     )
@@ -20,7 +20,7 @@ class CustomUserAdmin(UserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('email', 'display_name', 'gender', 'phone_number', 'password1', 'password2'),
+            'fields': ('email', 'display_name', 'is_student', 'phone_number', 'password1', 'password2'),
         }),
     )
     
@@ -267,15 +267,19 @@ class UniversityLinkAdmin(admin.ModelAdmin):
 
 @admin.register(GPACalculation)
 class GPACalculationAdmin(admin.ModelAdmin):
-    list_display = ('user', 'gpa', 'semester', 'academic_year', 'is_target', 'created_at')
+    list_display = ('user', 'gpa_alg', 'semester', 'academic_year', 'is_target', 'created_at')
     list_filter = ('is_target', 'semester', 'academic_year', 'created_at')
     search_fields = ('user__email', 'user__display_name')
     ordering = ('-created_at',)
     readonly_fields = ('id', 'created_at', 'updated_at')
     
     fieldsets = (
-        ('GPA Information', {
-            'fields': ('user', 'gpa', 'semester', 'academic_year', 'is_target')
+        ('GPA Event Information', {
+            'fields': ('user', 'gpa_alg', 'semester', 'academic_year', 'is_target')
+        }),
+        ('Encrypted Payload', {
+            'fields': ('gpa_ciphertext', 'gpa_iv', 'gpa_salt'),
+            'classes': ('collapse',)
         }),
         ('System Information', {
             'fields': ('id', 'created_at', 'updated_at'),

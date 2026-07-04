@@ -1,5 +1,5 @@
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError, AuthenticationFailed
 import logging
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,26 @@ class OptionalJWTAuthentication(JWTAuthentication):
             user = self.get_user(validated_token)
             logger.info(f"✅ Authentication successful for user {user.id}")
             return (user, validated_token)
+        except AuthenticationFailed as e:
+            # User not found or authentication failed
+            logger.warning(f"❌ Authentication failed: {str(e)}")
+            
+            # Try to decode token to see what user_id it's trying to find
+            try:
+                import jwt
+                from django.conf import settings
+                decoded = jwt.decode(raw_token, options={"verify_signature": False})
+                user_id = decoded.get('user_id')
+                logger.warning(f"   Token contains user_id: {user_id}")
+                logger.warning(f"   This user does not exist in the database")
+                logger.warning(f"   User may have been deleted, or token is from a different database")
+            except Exception as decode_error:
+                logger.warning(f"   Could not decode token: {str(decode_error)}")
+            
+            # Don't raise exception - just return None (unauthenticated)
+            # This allows AllowAny views to work without valid tokens
+            # IsAuthenticated views will still get 401 from permission check
+            return None
         except (InvalidToken, TokenError) as e:
             # Log detailed token errors for debugging
             logger.warning(f"❌ Token validation failed")

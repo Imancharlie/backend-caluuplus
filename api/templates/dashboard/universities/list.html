@@ -106,7 +106,10 @@
     <div class="modal">
         <h3 class="modal-title">Confirm Delete</h3>
         <p>Are you sure you want to delete <strong id="deleteName"></strong>?</p>
-        <p style="color: var(--danger); font-size: 0.875rem; margin-top: 0.5rem;">This will also delete all associated colleges, programs, and courses.</p>
+        <div style="margin-top: 0.75rem;">
+            <p style="font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.35rem;">This delete affects:</p>
+            <ul id="deleteImpactList" style="padding-left: 1rem; font-size: 0.85rem;"></ul>
+        </div>
         <div class="modal-actions">
             <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <form id="deleteForm" method="post" style="display: inline;">
@@ -141,9 +144,23 @@ document.querySelectorAll('tbody tr[data-edit-url]').forEach(function(row) {
     });
 });
 
-function confirmDelete(id, name) {
+async function confirmDelete(id, name) {
     document.getElementById('deleteName').textContent = name;
     document.getElementById('deleteForm').action = '/api/dashboard/universities/' + id + '/delete/';
+    const list = document.getElementById('deleteImpactList');
+    list.innerHTML = '<li>Loading impact...</li>';
+    try {
+        const response = await fetch('/api/dashboard/delete-preview/university/' + id + '/');
+        const data = await response.json();
+        list.innerHTML = '';
+        (data.impacts || []).forEach(function(item) {
+            const li = document.createElement('li');
+            li.textContent = item.label + ': ' + item.count;
+            list.appendChild(li);
+        });
+    } catch (error) {
+        list.innerHTML = '<li>Unable to load impact preview.</li>';
+    }
     document.getElementById('deleteModal').classList.add('active');
 }
 

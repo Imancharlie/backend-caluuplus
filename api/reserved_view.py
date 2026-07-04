@@ -12,7 +12,6 @@ import re
 import time
 from .gpa_privacy import encrypt_gpa_for_user
 from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation
-from .serializers import ArticleSerializer
 from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university
 from .permissions import user_is_admin, user_is_ambassador
 from .serializers import (
@@ -162,32 +161,6 @@ def register(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-def get_client_ip(request):
-    """Get client IP address from request"""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0].strip()
-    else:
-        ip = request.META.get('REMOTE_ADDR')
-    return ip
-
-
-def record_login_activity(user, request, login_type='email', success=True):
-    """Record a login activity for analytics"""
-    try:
-        from .models import LoginActivity
-        LoginActivity.objects.create(
-            user=user,
-            ip_address=get_client_ip(request),
-            user_agent=request.META.get('HTTP_USER_AGENT', '')[:500],
-            login_type=login_type,
-            success=success
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to record login activity: {e}")
-
-
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def login(request):
@@ -207,9 +180,6 @@ def login(request):
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
         refresh_token = str(refresh)
-        
-        # Record login activity for analytics
-        record_login_activity(user, request, login_type='email', success=True)
         
         # Log token generation for debugging
         logger.info(f"✅ Login successful for user {user.id} ({user.email})")
@@ -362,9 +332,6 @@ class FirebaseLoginView(APIView):
             # Generate JWT tokens for the user
             refresh = RefreshToken.for_user(user)
 
-            # Record login activity for analytics
-            record_login_activity(user, request, login_type='firebase', success=True)
-
             # Determine if this was an account link or new user creation
             # Account is linked if: user existed before (not created) AND firebase_uid was just set
             was_linked = not created and user.firebase_uid == uid
@@ -377,7 +344,6 @@ class FirebaseLoginView(APIView):
                     "username": user.username,
                     "email": user.email,
                     "display_name": user.display_name,
-                    "is_student": user.is_student,
                     "profile_picture": user.profile_picture,
                     "firebase_uid": user.firebase_uid,
                     "is_new_user": created,
@@ -495,14 +461,13 @@ def change_password(request):
 @api_view(['PATCH', 'POST'])
 @permission_classes([permissions.IsAuthenticated])
 def user_update(request):
-    """Update authenticated user's basic details: email, display_name, is_student, phone_number."""
+    """Update authenticated user's basic details: email, display_name, phone_number."""
     serializer = UserUpdateSerializer(instance=request.user, data=request.data, partial=True, context={'request': request})
     if serializer.is_valid():
         user = request.user
         updated = False
         new_email = serializer.validated_data.get('email')
         new_name = serializer.validated_data.get('display_name')
-        new_is_student = serializer.validated_data.get('is_student')
         new_phone = serializer.validated_data.get('phone_number')
         if new_email is not None and new_email != user.email:
             user.email = new_email
@@ -512,21 +477,17 @@ def user_update(request):
         if new_name is not None and new_name != user.display_name:
             user.display_name = new_name
             updated = True
-        if new_is_student is not None and new_is_student != user.is_student:
-            user.is_student = new_is_student
-            updated = True
         if new_phone is not None and new_phone != user.phone_number:
             user.phone_number = new_phone
             updated = True
         if updated:
-            user.save(update_fields=['email', 'username', 'display_name', 'is_student', 'phone_number'])
+            user.save(update_fields=['email', 'username', 'display_name', 'phone_number'])
         return Response({
             'message': 'Profile updated successfully',
             'data': {
                 'id': str(user.id), 
                 'email': user.email,
                 'display_name': user.display_name,
-                'is_student': user.is_student,
                 'phone_number': user.phone_number
             }
         }, status=status.HTTP_200_OK)
@@ -574,17 +535,8 @@ def admin_list_universities(request):
     term = request.GET.get('search', '').strip()
     qs = University.objects.all()
     if not user_is_admin(request.user):
-        # For ambassadors, restrict to their universities
-        # For regular authenticated users, return all universities (needed for student profile selection)
-        if user_is_ambassador(request.user):
-            # Ambassador: only show their assigned universities
-            allowed_ids = list(restrict_queryset_to_user_universities(University.objects.all(), request.user).values_list('id', flat=True))
-            if allowed_ids:
-                qs = qs.filter(id__in=allowed_ids)
-            else:
-                # Ambassador with no universities assigned - return empty
-                qs = qs.none()
-        # else: regular authenticated user gets all universities (no filtering)
+        allowed_ids = list(restrict_queryset_to_user_universities(University.objects.all(), request.user).values_list('id', flat=True))
+        qs = qs.filter(id__in=allowed_ids)
     if term:
         qs = qs.filter(models.Q(name__icontains=term) | models.Q(country__icontains=term))
     data = [{'id': str(u.id), 'name': u.name, 'country': u.country} for u in qs]
@@ -1222,97 +1174,12 @@ def save_courses_batch(request):
         # Get or create StudentCourse record
         student_course, created = StudentCourse.objects.get_or_create(student=student)
         
-        # Import logger for error handling
-        import logging
-        logger = logging.getLogger(__name__)
-        
         # Format courses data for storage in JSON field and create Course records if needed
         formatted_courses = []
         new_courses_created = []
         program = student.program
         
-        # Group courses by (semester, year) combination to check count once per group
-        courses_by_sem_year = {}
-        courses_without_sem_year = []
         for course_data in courses_data:
-            semester = course_data.get('semester')
-            year = course_data.get('year')
-            if semester and year:
-                key = (semester, year)
-                if key not in courses_by_sem_year:
-                    courses_by_sem_year[key] = []
-                courses_by_sem_year[key].append(course_data)
-            else:
-                courses_without_sem_year.append(course_data)
-        
-        # Process courses grouped by semester/year
-        for (semester, year), group_courses in courses_by_sem_year.items():
-            # Check count ONCE for this semester/year group
-            existing_courses_count = Course.objects.filter(
-                program=program,
-                semester=semester,
-                year=year
-            ).count()
-            # Only populate to database if less than 4 courses exist
-            should_populate_to_db = existing_courses_count < 4
-            
-            # Process all courses in this group
-            for course_data in group_courses:
-                course_code = course_data.get('course_code')
-                course_name = course_data.get('course_name')
-                credits = course_data.get('credit_hour', 0)
-                course_type = 'elective' if course_data.get('is_elective') else 'core'
-                course_id = course_data.get('course_id')
-                
-                # Check if course exists in Course model for this program
-                course_obj = None
-                if course_code and should_populate_to_db:
-                    # Use update_or_create to avoid duplicates - match by code, program, semester, year
-                    if course_name and credits and semester and year:
-                        try:
-                            course_obj, created = Course.objects.update_or_create(
-                                code=course_code,
-                                program=program,
-                                semester=semester,
-                                year=year,
-                                defaults={
-                                    'name': course_name,
-                                    'credits': credits,
-                                    'type': course_type,
-                                }
-                            )
-                            course_id = str(course_obj.id)
-                            if created:
-                                new_courses_created.append({
-                                    'code': course_code,
-                                    'name': course_name,
-                                    'semester': semester,
-                                    'year': year
-                                })
-                        except Exception as create_error:
-                            logger.error(f"Failed to create/update course in Course table: {str(create_error)}")
-                    else:
-                        # Try to find existing course by code
-                        try:
-                            course_obj = Course.objects.get(code=course_code, program=program)
-                            course_id = str(course_obj.id)
-                        except Course.DoesNotExist:
-                            pass
-            
-                formatted_course = {
-                    'id': course_id,
-                    'code': course_code,
-                    'name': course_name,
-                    'credits': credits,
-                    'type': course_type,
-                    'semester': semester,
-                    'year': year,
-                    'added_at': None  # Will be set when saved
-                }
-                formatted_courses.append(formatted_course)
-        
-        # Process courses without semester/year (shouldn't populate to DB)
-        for course_data in courses_without_sem_year:
             course_code = course_data.get('course_code')
             course_name = course_data.get('course_name')
             credits = course_data.get('credit_hour', 0)
@@ -1320,6 +1187,43 @@ def save_courses_batch(request):
             semester = course_data.get('semester')
             year = course_data.get('year')
             course_id = course_data.get('course_id')
+            
+            # Check how many courses exist in Course model for this program/semester/year
+            should_populate_to_db = False
+            if semester and year:
+                existing_courses_count = Course.objects.filter(
+                    program=program,
+                    semester=semester,
+                    year=year
+                ).count()
+                # Only populate to database if less than 4 courses exist
+                should_populate_to_db = existing_courses_count < 4
+            
+            # Check if course exists in Course model for this program
+            course_obj = None
+            if course_code and should_populate_to_db:
+                try:
+                    course_obj = Course.objects.get(code=course_code, program=program)
+                    course_id = str(course_obj.id)
+                except Course.DoesNotExist:
+                    # Course doesn't exist, create it only if we should populate
+                    if course_name and credits and semester and year:
+                        course_obj = Course.objects.create(
+                            code=course_code,
+                            name=course_name,
+                            credits=credits,
+                            type=course_type,
+                            semester=semester,
+                            year=year,
+                            program=program
+                        )
+                        course_id = str(course_obj.id)
+                        new_courses_created.append({
+                            'code': course_code,
+                            'name': course_name,
+                            'semester': semester,
+                            'year': year
+                        })
             
             formatted_course = {
                 'id': course_id,
@@ -1423,6 +1327,7 @@ def student_courses(request):
             serializer = CourseAddSerializer(data=request.data)
             if not serializer.is_valid():
                 logger.error(f"❌ Serializer validation failed: {serializer.errors}")
+                print(f"❌ Serializer validation failed: {serializer.errors}")
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             
             course_id = serializer.validated_data.get('course_id')
@@ -1674,6 +1579,7 @@ def student_courses(request):
             serializer = StudentCourseUpdateSerializer(data=request.data)
             if not serializer.is_valid():
                 logger.error(f"❌ Serializer validation failed: {serializer.errors}")
+                print(f"❌ Serializer validation failed: {serializer.errors}")
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             
             courses_data = serializer.validated_data['courses']
@@ -1706,106 +1612,102 @@ def student_courses(request):
             new_courses_created = []
             program = student.program
             
-            # Group courses by (semester, year) combination to check count once per group
-            courses_by_sem_year = {}
-            courses_without_sem_year = []
-            for course in valid_courses:
+            for idx, course in enumerate(valid_courses):
+                # Support both naming conventions (frontend: course_code/course_name/credit_hour/is_elective/course_id)
+                # and backend (code/name/credits/type/id)
+                course_id = course.get('id') or course.get('course_id')
+                course_code = course.get('code') or course.get('course_code')
+                course_name = course.get('name') or course.get('course_name')
+                credits = course.get('credits') if course.get('credits') is not None else course.get('credit_hour', 0)
+                
+                # Handle type: is_elective (boolean) -> type (string)
+                course_type = course.get('type', 'core')
+                if 'is_elective' in course and course['is_elective'] is not None:
+                    course_type = 'elective' if course['is_elective'] else 'core'
+                
                 semester = course.get('semester')
                 year = course.get('year')
-                if semester and year:
-                    key = (semester, year)
-                    if key not in courses_by_sem_year:
-                        courses_by_sem_year[key] = []
-                    courses_by_sem_year[key].append(course)
-                else:
-                    courses_without_sem_year.append(course)
-            
-            # Process courses grouped by semester/year
-            for (semester, year), group_courses in courses_by_sem_year.items():
-                # Check count ONCE for this semester/year group
-                existing_courses_count = Course.objects.filter(
-                    program=program,
-                    semester=semester,
-                    year=year
-                ).count()
-                # Only populate to database if less than 4 courses exist
-                should_populate_to_db = existing_courses_count < 4
-                logger.info(f"  📊 Group ({semester}, {year}) - Existing courses: {existing_courses_count}, Should populate: {should_populate_to_db}")
                 
-                # Process all courses in this group
-                for idx, course in enumerate(group_courses):
-                    # Support both naming conventions (frontend: course_code/course_name/credit_hour/is_elective/course_id)
-                    # and backend (code/name/credits/type/id)
-                    course_id = course.get('id') or course.get('course_id')
-                    course_code = course.get('code') or course.get('course_code')
-                    course_name = course.get('name') or course.get('course_name')
-                    credits = course.get('credits') if course.get('credits') is not None else course.get('credit_hour', 0)
-                    
-                    # Handle type: is_elective (boolean) -> type (string)
-                    course_type = course.get('type', 'core')
-                    if 'is_elective' in course and course['is_elective'] is not None:
-                        course_type = 'elective' if course['is_elective'] else 'core'
-                    
-                    logger.info(f"  Processing course {idx + 1}/{len(group_courses)} in group ({semester}, {year}): {course_code or 'N/A'}")
-                    
-                    # Check if course exists in Course model for this program
-                    course_obj = None
-                    if course_code and should_populate_to_db:
-                        logger.info(f"  🔍 Attempting to find/create course '{course_code}' in Course table")
-                        # Try to find by ID first if provided (only if it's a valid UUID)
-                        if course_id:
-                            # Validate if course_id is a valid UUID before querying
+                logger.info(f"  Processing course {idx + 1}/{len(valid_courses)}: {course_code or 'N/A'}")
+                
+                # Check how many courses exist in Course model for this program/semester/year
+                should_populate_to_db = False
+                existing_courses_count = 0
+                if semester and year:
+                    existing_courses_count = Course.objects.filter(
+                        program=program,
+                        semester=semester,
+                        year=year
+                    ).count()
+                    # Only populate to database if less than 4 courses exist
+                    should_populate_to_db = existing_courses_count < 4
+                    logger.info(f"  📊 Course table check - Existing courses: {existing_courses_count}, Should populate: {should_populate_to_db}")
+                else:
+                    logger.info(f"  ⚠️ Missing semester/year - Semester: {semester}, Year: {year}")
+                
+                # Check if course exists in Course model for this program
+                course_obj = None
+                if course_code and should_populate_to_db:
+                    logger.info(f"  🔍 Attempting to find/create course '{course_code}' in Course table")
+                    # Try to find by ID first if provided (only if it's a valid UUID)
+                    if course_id:
+                        # Validate if course_id is a valid UUID before querying
+                        is_valid_uuid = False
+                        try:
+                            import uuid
+                            uuid.UUID(str(course_id))
+                            is_valid_uuid = True
+                        except (ValueError, AttributeError, TypeError):
+                            # course_id is not a valid UUID (likely a temporary ID from frontend)
                             is_valid_uuid = False
-                            try:
-                                import uuid
-                                uuid.UUID(str(course_id))
-                                is_valid_uuid = True
-                            except (ValueError, AttributeError, TypeError):
-                                # course_id is not a valid UUID (likely a temporary ID from frontend)
-                                is_valid_uuid = False
-                                logger.debug(f"Course ID '{course_id}' is not a valid UUID, skipping Course table lookup")
-                            
-                            if is_valid_uuid:
-                                try:
-                                    course_obj = Course.objects.get(id=course_id, program=program)
-                                    logger.info(f"✅ Found course in Course table by ID: {course_id}")
-                                except Course.DoesNotExist:
-                                    logger.debug(f"Course with ID {course_id} not found in Course table")
-                                    pass
-                                except Exception as e:
-                                    logger.warning(f"Error looking up course by ID {course_id}: {str(e)}")
-                                    pass
+                            logger.debug(f"Course ID '{course_id}' is not a valid UUID, skipping Course table lookup")
                         
-                        # If not found by ID, try by code using update_or_create to handle duplicates
-                        if not course_obj:
-                            logger.info(f"  🔍 Looking up/creating course by code '{course_code}' in Course table")
+                        if is_valid_uuid:
+                            try:
+                                course_obj = Course.objects.get(id=course_id, program=program)
+                                logger.info(f"✅ Found course in Course table by ID: {course_id}")
+                            except Course.DoesNotExist:
+                                logger.debug(f"Course with ID {course_id} not found in Course table")
+                                pass
+                            except Exception as e:
+                                logger.warning(f"Error looking up course by ID {course_id}: {str(e)}")
+                                pass
+                    
+                    # If not found by ID, try by code
+                    if not course_obj:
+                        logger.info(f"  🔍 Looking up course by code '{course_code}' in Course table")
+                        try:
+                            course_obj = Course.objects.get(code=course_code, program=program)
+                            course_id = str(course_obj.id)
+                            logger.info(f"  ✅ Found existing course in Course table: {course_code} (ID: {course_id})")
+                            print(f"  ✅ Found existing course in Course table: {course_code} (ID: {course_id})")
+                        except Course.DoesNotExist:
+                            logger.info(f"  📝 Course '{course_code}' not found in Course table, attempting to create...")
+                            print(f"  📝 Course '{course_code}' not found in Course table, attempting to create...")
+                            # Course doesn't exist, create it only if we should populate
                             if course_name and credits and semester and year:
                                 try:
-                                    # Use update_or_create to avoid duplicates - match by code, program, semester, year
-                                    course_obj, created = Course.objects.update_or_create(
+                                    course_obj = Course.objects.create(
                                         code=course_code,
-                                        program=program,
+                                        name=course_name,
+                                        credits=credits,
+                                        type=course_type,
                                         semester=semester,
                                         year=year,
-                                        defaults={
-                                            'name': course_name,
-                                            'credits': credits,
-                                            'type': course_type,
-                                        }
+                                        program=program
                                     )
                                     course_id = str(course_obj.id)
-                                    if created:
-                                        logger.info(f"  ✅ Created new course in Course table: {course_code} (ID: {course_id})")
-                                        new_courses_created.append({
-                                            'code': course_code,
-                                            'name': course_name,
-                                            'semester': semester,
-                                            'year': year
-                                        })
-                                    else:
-                                        logger.info(f"  🔄 Updated existing course in Course table: {course_code} (ID: {course_id})")
+                                    logger.info(f"  ✅ Created new course in Course table: {course_code} (ID: {course_id})")
+                                    print(f"  ✅ Created new course in Course table: {course_code} (ID: {course_id})")
+                                    new_courses_created.append({
+                                        'code': course_code,
+                                        'name': course_name,
+                                        'semester': semester,
+                                        'year': year
+                                    })
                                 except Exception as create_error:
-                                    logger.error(f"  ❌ Failed to create/update course in Course table: {str(create_error)}")
+                                    logger.error(f"  ❌ Failed to create course in Course table: {str(create_error)}")
+                                    print(f"  ❌ Failed to create course in Course table: {str(create_error)}")
                             else:
                                 missing = []
                                 if not course_name:
@@ -1817,77 +1719,62 @@ def student_courses(request):
                                 if not year:
                                     missing.append('year')
                                 logger.warning(f"  ⚠️ Cannot create course - missing fields: {', '.join(missing)}")
-                    elif not course_code:
-                        logger.info(f"  ⚠️ No course_code provided, skipping Course table operations")
-                    elif not should_populate_to_db:
-                        logger.info(f"  ⚠️ Skipping Course table - already have {existing_courses_count} courses (limit: 4)")
-                    
-                    # Use course_obj data if available, otherwise use provided values
-                    if course_obj:
-                        # Course exists in Course table, use its data
-                        final_course_id = str(course_obj.id)
-                        final_course_code = course_obj.code
-                        final_course_name = course_obj.name
-                        final_credits = course_obj.credits
-                        final_course_type = course_obj.type
-                        final_semester = course_obj.semester
-                        final_year = course_obj.year
-                        logger.info(f"  ✅ Using Course table data for: {final_course_code}")
-                    else:
-                        # Use provided values or defaults
-                        final_course_id = course_id or str(uuid.uuid4())
-                        final_course_code = course_code or ''
-                        final_course_name = course_name or ''
-                        final_credits = credits if credits is not None else 0
-                        final_course_type = course_type or 'core'
-                        final_semester = semester
-                        final_year = year
-                        logger.info(f"  📝 Using provided data for: {final_course_code or final_course_name or 'N/A'}")
-                    
-                    formatted_course = {
-                        'id': final_course_id,
-                        'code': final_course_code,
-                        'name': final_course_name,
-                        'credits': final_credits,
-                        'type': final_course_type,
-                        'semester': final_semester,
-                        'year': final_year,
-                        'added_at': course.get('added_at')
-                    }
-                    
-                    logger.info(f"  📦 Formatted course: {formatted_course}")
-                    formatted_courses.append(formatted_course)
-            
-            # Process courses without semester/year (shouldn't populate to DB)
-            for course in courses_without_sem_year:
-                course_id = course.get('id') or course.get('course_id')
-                course_code = course.get('code') or course.get('course_code')
-                course_name = course.get('name') or course.get('course_name')
-                credits = course.get('credits') if course.get('credits') is not None else course.get('credit_hour', 0)
-                course_type = course.get('type', 'core')
-                if 'is_elective' in course and course['is_elective'] is not None:
-                    course_type = 'elective' if course['is_elective'] else 'core'
-                semester = course.get('semester')
-                year = course.get('year')
+                                print(f"  ⚠️ Cannot create course - missing fields: {', '.join(missing)}")
+                        except Exception as lookup_error:
+                            logger.error(f"  ❌ Error looking up course by code: {str(lookup_error)}")
+                            print(f"  ❌ Error looking up course by code: {str(lookup_error)}")
+                elif not course_code:
+                    logger.info(f"  ⚠️ No course_code provided, skipping Course table operations")
+                    print(f"  ⚠️ No course_code provided, skipping Course table operations")
+                elif not should_populate_to_db:
+                    logger.info(f"  ⚠️ Skipping Course table - already have {existing_courses_count} courses (limit: 4)")
+                    print(f"  ⚠️ Skipping Course table - already have {existing_courses_count} courses (limit: 4)")
                 
-                logger.info(f"  ⚠️ Processing course without semester/year: {course_code or 'N/A'}")
+                # Use course_obj data if available, otherwise use provided values
+                if course_obj:
+                    # Course exists in Course table, use its data
+                    final_course_id = str(course_obj.id)
+                    final_course_code = course_obj.code
+                    final_course_name = course_obj.name
+                    final_credits = course_obj.credits
+                    final_course_type = course_obj.type
+                    final_semester = course_obj.semester
+                    final_year = course_obj.year
+                    logger.info(f"  ✅ Using Course table data for: {final_course_code}")
+                    print(f"  ✅ Using Course table data for: {final_course_code}")
+                else:
+                    # Use provided values or defaults
+                    final_course_id = course_id or str(uuid.uuid4())
+                    final_course_code = course_code or ''
+                    final_course_name = course_name or ''
+                    final_credits = credits if credits is not None else 0
+                    final_course_type = course_type or 'core'
+                    final_semester = semester if semester is not None else (student.semester if student.semester is not None else 1)
+                    final_year = year if year is not None else (student.year if student.year is not None else 1)
+                    logger.info(f"  📝 Using provided data for: {final_course_code or final_course_name or 'N/A'}")
+                    print(f"  📝 Using provided data for: {final_course_code or final_course_name or 'N/A'}")
                 
                 formatted_course = {
-                    'id': course_id or str(uuid.uuid4()),
-                    'code': course_code or '',
-                    'name': course_name or '',
-                    'credits': credits if credits is not None else 0,
-                    'type': course_type or 'core',
-                    'semester': semester if semester is not None else (student.semester if student.semester is not None else 1),
-                    'year': year if year is not None else (student.year if student.year is not None else 1),
+                    'id': final_course_id,
+                    'code': final_course_code,
+                    'name': final_course_name,
+                    'credits': final_credits,
+                    'type': final_course_type,
+                    'semester': final_semester,
+                    'year': final_year,
                     'added_at': course.get('added_at')
                 }
+                
+                logger.info(f"  📦 Formatted course: {formatted_course}")
+                print(f"  📦 Formatted course: {formatted_course}")
                 formatted_courses.append(formatted_course)
             
             # Merge courses instead of replacing - update existing courses by ID, add new ones
             existing_courses = student_course.courses or []
             logger.info(f"📊 Current student_courses before merge: {len(existing_courses)} courses")
+            print(f"📊 Current student_courses before merge: {len(existing_courses)} courses")
             logger.info(f"📋 Courses to merge: {len(formatted_courses)} courses")
+            print(f"📋 Courses to merge: {len(formatted_courses)} courses")
             
             # Create a dictionary of existing courses by ID for quick lookup
             existing_courses_dict = {}
@@ -1916,11 +1803,13 @@ def student_courses(request):
                     merged_courses.append(formatted_course)
                     updated_count += 1
                     logger.info(f"  🔄 Updating existing course: {formatted_course.get('code', 'N/A')} (ID: {course_id})")
+                    print(f"  🔄 Updating existing course: {formatted_course.get('code', 'N/A')} (ID: {course_id})")
                 else:
                     # Add new course
                     merged_courses.append(formatted_course)
                     added_count += 1
                     logger.info(f"  ➕ Adding new course: {formatted_course.get('code', 'N/A')} (ID: {course_id or 'new'})")
+                    print(f"  ➕ Adding new course: {formatted_course.get('code', 'N/A')} (ID: {course_id or 'new'})")
             
             # Add all existing courses that weren't in the request (preserve them)
             preserved_count = 0
@@ -1929,39 +1818,50 @@ def student_courses(request):
                     merged_courses.append(course_data)
                     preserved_count += 1
                     logger.info(f"  💾 Preserving existing course: {course_data.get('code', 'N/A')} (ID: {course_id})")
+                    print(f"  💾 Preserving existing course: {course_data.get('code', 'N/A')} (ID: {course_id})")
             
             logger.info(f"📊 Merge result: {updated_count} updated, {added_count} added, {preserved_count} preserved, {len(merged_courses)} total courses")
+            print(f"📊 Merge result: {updated_count} updated, {added_count} added, {preserved_count} preserved, {len(merged_courses)} total courses")
             logger.info(f"📋 Final courses to save: {merged_courses}")
+            print(f"📋 Final courses to save: {merged_courses}")
             
             try:
                 # Ensure merged_courses is a list, not None
                 if not merged_courses:
                     logger.error("❌ merged_courses is empty, nothing to save!")
+                    print("❌ merged_courses is empty, nothing to save!")
                     return Response({
                         'error': 'No valid courses to save'
                     }, status=status.HTTP_400_BAD_REQUEST)
                 
                 # Set courses and save
                 logger.info(f"🔧 Setting student_course.courses to merged courses: {len(merged_courses)} courses")
+                print(f"🔧 Setting student_course.courses to merged courses: {len(merged_courses)} courses")
                 student_course.courses = merged_courses
                 
                 # Save explicitly
                 logger.info(f"💾 Calling student_course.save()...")
+                print(f"💾 Calling student_course.save()...")
                 student_course.save(update_fields=['courses', 'updated_at'])
                 
                 # Verify what was actually saved by refreshing from DB
                 logger.info(f"🔄 Refreshing from database...")
+                print(f"🔄 Refreshing from database...")
                 student_course.refresh_from_db()
                 
                 logger.info(f"✅ Courses saved successfully! Saved courses: {student_course.courses}")
+                print(f"✅ Courses saved successfully! Saved courses: {student_course.courses}")
                 logger.info(f"📊 Number of courses saved: {len(student_course.courses) if student_course.courses else 0}")
+                print(f"📊 Number of courses saved: {len(student_course.courses) if student_course.courses else 0}")
                 
                 # Double-check by querying the database directly
                 from django.db import transaction
                 with transaction.atomic():
                     db_student_course = StudentCourse.objects.get(id=student_course.id)
                     logger.info(f"🔍 Database verification - courses in DB: {db_student_course.courses}")
+                    print(f"🔍 Database verification - courses in DB: {db_student_course.courses}")
                     logger.info(f"🔍 Database verification - number of courses: {len(db_student_course.courses) if db_student_course.courses else 0}")
+                    print(f"🔍 Database verification - number of courses: {len(db_student_course.courses) if db_student_course.courses else 0}")
             except Exception as save_error:
                 import traceback
                 error_traceback = traceback.format_exc()
@@ -1972,6 +1872,13 @@ def student_courses(request):
                 logger.error(f"Error Type: {type(save_error).__name__}")
                 logger.error(f"\nFull Traceback:\n{error_traceback}")
                 logger.error("=" * 80)
+                print("=" * 80)
+                print("❌ FAILED TO SAVE COURSES TO STUDENT_COURSES")
+                print("=" * 80)
+                print(f"Error: {str(save_error)}")
+                print(f"Error Type: {type(save_error).__name__}")
+                print(f"\nFull Traceback:\n{error_traceback}")
+                print("=" * 80)
                 return Response({
                     'error': f'Failed to save courses: {str(save_error)}'
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -2006,6 +1913,7 @@ def student_courses(request):
                     )
                 except Exception as notify_error:
                     logger.warning(f"Failed to notify admins about new courses: {str(notify_error)}")
+                    print(f"⚠️ Failed to notify admins: {str(notify_error)}")
             
             response_data = {
                 'message': 'Courses updated successfully',
@@ -2021,6 +1929,8 @@ def student_courses(request):
             
             logger.info("=" * 80)
             logger.info(f"✅ PUT /api/students/courses/ - Successfully merged: {updated_count} updated, {added_count} added, {preserved_count} preserved, {len(merged_courses)} total")
+            print("=" * 80)
+            print(f"✅ PUT /api/students/courses/ - Successfully merged: {updated_count} updated, {added_count} added, {preserved_count} preserved, {len(merged_courses)} total")
             
             return Response(response_data, status=status.HTTP_200_OK)
         
@@ -2035,6 +1945,13 @@ def student_courses(request):
             logger.error(f"Error Type: {type(e).__name__}")
             logger.error(f"\nFull Traceback:\n{error_traceback}")
             logger.error("=" * 80)
+            print("=" * 80)
+            print("❌ UNEXPECTED ERROR IN STUDENT_COURSES PUT")
+            print("=" * 80)
+            print(f"Error: {str(e)}")
+            print(f"Error Type: {type(e).__name__}")
+            print(f"\nFull Traceback:\n{error_traceback}")
+            print("=" * 80)
             return Response({
                 'error': f'An unexpected error occurred: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -2191,7 +2108,6 @@ def user_basic_details(request):
             'email': user.email,
             'display_name': user.display_name,
             'username': user.username,
-            'is_student': user.is_student,
             'student_profile': {
                 'id': str(student.id),
                 'university': student.university.name,
@@ -2208,7 +2124,6 @@ def user_basic_details(request):
             'email': user.email,
             'display_name': user.display_name,
             'username': user.username,
-            'is_student': user.is_student,
             'student_profile': None
         }
     
@@ -2798,6 +2713,7 @@ def timetable_slots(request):
         data = request.data.copy()
         
         # Debug: Log the received data
+        print(f"DEBUG: Received data: {data}")
         
         # Validate required fields (course is now optional)
         required_fields = ['day_of_week', 'time_slot']
@@ -3262,10 +3178,7 @@ def timetable_debug_validation(request):
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def article_list(request):
-    """
-    List published articles with pagination and filtering.
-    Returns content exactly as stored (JSON string) - no transformation on GET.
-    """
+    """Get list of published articles with pagination and filtering"""
     page = int(request.GET.get('page', 1))
     page_size = int(request.GET.get('page_size', 12))
     sort_by = request.GET.get('sort_by', 'newest')
@@ -3290,17 +3203,12 @@ def article_list(request):
     end = start + page_size
     articles_page = articles[start:end]
     
-    # Use serializer for consistent data format
-    serializer = ArticleSerializer(articles_page, many=True, context={'request': request})
-    article_data = serializer.data
-    
-    # Add additional fields for list view
-    for i, article in enumerate(articles_page):
+    article_data = []
+    for article in articles_page:
         # Build cover image URL
         cover_image_url = None
         if article.cover_image:
             cover_image_url = request.build_absolute_uri(article.cover_image.url)
-        article_data[i]['cover_image'] = cover_image_url
         
         # Build category data
         category_data = {
@@ -3311,20 +3219,34 @@ def article_list(request):
             'color': f"bg-{article.category}-500",
             'icon': "📚"
         }
-        article_data[i]['category'] = category_data
         
         # Build author data
         author_data = {
             'id': str(article.author.id),
             'name': article.author.display_name if hasattr(article.author, 'display_name') else article.author.username,
-            'avatar': None
+            'avatar': None  # Add avatar field if needed
         }
-        article_data[i]['author'] = author_data
         
-        # Add frontend-specific fields
-        article_data[i]['is_liked'] = False
-        article_data[i]['is_saved'] = False
-        article_data[i]['is_shared'] = False
+        article_data.append({
+            'id': str(article.id),
+            'title': article.title,
+            'content': article.content,
+            'excerpt': article.excerpt or article.content[:200] + '...',
+            'cover_image': cover_image_url,
+            'category': category_data,
+            'tags': article.tags,
+            'author': author_data,
+            'published_at': article.published_at.isoformat() if article.published_at else article.created_at.isoformat(),
+            'updated_at': article.updated_at.isoformat(),
+            'read_time': article.read_time,
+            'views': article.views,
+            'likes': article.likes,
+            'is_liked': False,  # TODO: Implement user-specific like status
+            'is_saved': False,  # TODO: Implement user-specific save status
+            'is_shared': False,  # TODO: Implement user-specific share status
+            'share_count': article.share_count,
+            'status': article.status
+        })
     
     return Response({
         'results': article_data,
@@ -3339,30 +3261,18 @@ def article_list(request):
 
 
 @api_view(['GET'])
-@permission_classes([permissions.AllowAny])
+@permission_classes([permissions.IsAuthenticated])
 def article_detail(request, article_id):
-    """
-    Get a single article (public endpoint).
-    Returns content exactly as stored (JSON string) - no transformation on GET.
-    """
+    """Get single article"""
     try:
-        article = Article.objects.get(id=article_id)
+        article = Article.objects.get(id=article_id, is_published=True)
     except Article.DoesNotExist:
         return Response({'error': 'Article not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Only show published articles to non-authenticated users
-    if not request.user.is_authenticated and not article.is_published:
-        return Response({'error': 'Article not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Use serializer to return data (content returned as-is, no transformation)
-    serializer = ArticleSerializer(article, context={'request': request})
-    data = serializer.data
     
     # Build cover image URL
     cover_image_url = None
     if article.cover_image:
         cover_image_url = request.build_absolute_uri(article.cover_image.url)
-    data['cover_image'] = cover_image_url
     
     # Build category data
     category_data = {
@@ -3373,22 +3283,34 @@ def article_detail(request, article_id):
         'color': f"bg-{article.category}-500",
         'icon': "📚"
     }
-    data['category'] = category_data
     
     # Build author data
     author_data = {
         'id': str(article.author.id),
         'name': article.author.display_name if hasattr(article.author, 'display_name') else article.author.username,
-        'avatar': None
+        'avatar': None  # Add avatar field if needed
     }
-    data['author'] = author_data
     
-    # Add frontend-specific fields
-    data['is_liked'] = False  # TODO: Implement user-specific like status
-    data['is_saved'] = False  # TODO: Implement user-specific save status
-    data['is_shared'] = False  # TODO: Implement user-specific share status
-    
-    return Response(data)
+    return Response({
+        'id': str(article.id),
+        'title': article.title,
+        'content': article.content,
+        'excerpt': article.excerpt,
+        'cover_image': cover_image_url,
+        'category': category_data,
+        'tags': article.tags,
+        'author': author_data,
+        'published_at': article.published_at.isoformat() if article.published_at else article.created_at.isoformat(),
+        'updated_at': article.updated_at.isoformat(),
+        'read_time': article.read_time,
+        'views': article.views,
+        'likes': article.likes,
+        'is_liked': False,  # TODO: Implement user-specific like status
+        'is_saved': False,  # TODO: Implement user-specific save status
+        'is_shared': False,  # TODO: Implement user-specific share status
+        'share_count': article.share_count,
+        'status': article.status
+    })
 
 
 @api_view(['POST'])
@@ -3525,233 +3447,6 @@ def article_saved(request):
         'next': None,
         'previous': None
     }, status=status.HTTP_200_OK)
-
-
-# Admin Article Management Endpoints
-@api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
-def admin_article_create(request):
-    """
-    Create a new article (admin endpoint).
-    Endpoint: POST /admin/articles/
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    # Log incoming data for debugging
-    logger.info(f"📝 Creating article - User: {request.user.id}")
-    logger.debug(f"Request data keys: {list(request.data.keys())}")
-    logger.debug(f"Request FILES keys: {list(request.FILES.keys())}")
-    
-    # Handle content if it comes as a JSON object instead of string
-    data = request.data.copy()
-    if 'content' in data:
-        import json
-        content = data['content']
-        # If content is already a string, keep it
-        # If it's a dict/list, convert to JSON string
-        if isinstance(content, (dict, list)):
-            try:
-                data['content'] = json.dumps(content)
-                logger.debug(f"Converted content from {type(content).__name__} to JSON string")
-            except (TypeError, ValueError) as e:
-                logger.warning(f"Failed to convert content to JSON string: {e}")
-        elif not isinstance(content, str):
-            logger.warning(f"Content is unexpected type: {type(content).__name__}")
-    
-    serializer = ArticleSerializer(data=data, context={'request': request})
-    
-    if serializer.is_valid():
-        article = serializer.save()
-        logger.info(f"✅ Article created successfully - ID: {article.id}")
-        
-        # Build response with additional fields
-        response_data = serializer.data
-        
-        # Build cover image URL
-        cover_image_url = None
-        if article.cover_image:
-            cover_image_url = request.build_absolute_uri(article.cover_image.url)
-        response_data['cover_image'] = cover_image_url
-        
-        # Build category data
-        category_data = {
-            'id': article.category,
-            'name': article.get_category_display(),
-            'slug': article.category,
-            'description': f"{article.get_category_display()} content",
-            'color': f"bg-{article.category}-500",
-            'icon': "📚"
-        }
-        response_data['category'] = category_data
-        
-        # Build author data
-        author_data = {
-            'id': str(article.author.id),
-            'name': article.author.display_name if hasattr(article.author, 'display_name') else article.author.username,
-            'avatar': None
-        }
-        response_data['author'] = author_data
-        
-        return Response(response_data, status=status.HTTP_201_CREATED)
-    
-    # Log validation errors for debugging
-    logger.warning(f"❌ Article creation failed - Validation errors:")
-    for field, errors in serializer.errors.items():
-        logger.warning(f"   {field}: {errors}")
-    
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['PUT', 'PATCH', 'DELETE'])
-@permission_classes([permissions.IsAuthenticated])
-def admin_article_detail(request, article_id):
-    """
-    Update or delete an article (admin endpoint).
-    Endpoint: PUT/PATCH/DELETE /admin/articles/{id}/
-    """
-    try:
-        article = Article.objects.get(id=article_id)
-    except Article.DoesNotExist:
-        return Response({'error': 'Article not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Check permissions (owner or superuser only)
-    if article.author != request.user and not request.user.is_superuser:
-        return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
-    
-    # DELETE request
-    if request.method == 'DELETE':
-        article.delete()
-        return Response({'message': 'Article deleted successfully'}, status=status.HTTP_200_OK)
-    
-    # PUT/PATCH request - update article
-    serializer = ArticleSerializer(
-        article, 
-        data=request.data, 
-        partial=(request.method == 'PATCH'), 
-        context={'request': request}
-    )
-    
-    if serializer.is_valid():
-        article = serializer.save()
-        
-        # Build response with additional fields
-        response_data = serializer.data
-        
-        # Build cover image URL
-        cover_image_url = None
-        if article.cover_image:
-            cover_image_url = request.build_absolute_uri(article.cover_image.url)
-        response_data['cover_image'] = cover_image_url
-        
-        # Build category data
-        category_data = {
-            'id': article.category,
-            'name': article.get_category_display(),
-            'slug': article.category,
-            'description': f"{article.get_category_display()} content",
-            'color': f"bg-{article.category}-500",
-            'icon': "📚"
-        }
-        response_data['category'] = category_data
-        
-        # Build author data
-        author_data = {
-            'id': str(article.author.id),
-            'name': article.author.display_name if hasattr(article.author, 'display_name') else article.author.username,
-            'avatar': None
-        }
-        response_data['author'] = author_data
-        
-        return Response(response_data, status=status.HTTP_200_OK)
-    
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
-def article_image_upload(request):
-    """
-    Upload an image for use in article content blocks.
-    
-    Returns the filename that should be used in the image block's 'imageName' field.
-    Frontend will insert this into the content block.
-    
-    Request: multipart/form-data with 'image' file and optional 'filename'
-    Response: { "imageName": "1234567890-abc123.jpg" }
-    
-    Images are accessible at: /media/articles/{imageName}
-    """
-    if 'image' not in request.FILES:
-        return Response(
-            {'error': 'No image file provided'}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    image_file = request.FILES['image']
-    
-    # Validate file type
-    allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
-    if image_file.content_type not in allowed_types:
-        return Response(
-            {'error': f'Invalid file type. Allowed types: {", ".join(allowed_types)}'}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Validate file size (max 5MB)
-    max_size = 5 * 1024 * 1024  # 5MB
-    if image_file.size > max_size:
-        return Response(
-            {'error': f'File size exceeds maximum of {max_size / (1024*1024)}MB'}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Get filename from request or generate one
-    import uuid
-    import os
-    from django.core.files.storage import default_storage
-    
-    provided_filename = request.POST.get('filename', '').strip()
-    
-    if provided_filename:
-        # Use provided filename, but sanitize it
-        filename = os.path.basename(provided_filename)  # Remove any path components
-        # Ensure it has a valid extension
-        file_ext = os.path.splitext(filename)[1].lower()
-        if not file_ext:
-            # Add extension from uploaded file
-            original_ext = os.path.splitext(image_file.name)[1].lower()
-            filename = f"{filename}{original_ext or '.jpg'}"
-    else:
-        # Generate unique filename
-        file_ext = os.path.splitext(image_file.name)[1].lower()
-        if not file_ext:
-            file_ext = '.jpg'
-        filename = f"{uuid.uuid4().hex[:12]}{file_ext}"
-    
-    # Ensure filename is safe (no path traversal)
-    filename = os.path.basename(filename)
-    
-    # Save to articles directory
-    file_path = f"articles/{filename}"
-    
-    # Save file
-    try:
-        saved_path = default_storage.save(file_path, image_file)
-        
-        # Extract just the filename (not the full path)
-        # saved_path will be "articles/filename.jpg", we want just "filename.jpg"
-        image_name = os.path.basename(saved_path)
-        
-        return Response({
-            'imageName': image_name  # Just the filename: "1234567890-abc123.jpg"
-        }, status=status.HTTP_201_CREATED)
-        
-    except Exception as e:
-        return Response(
-            {'error': f'Failed to save image: {str(e)}'}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
 
 
 # Slide Views

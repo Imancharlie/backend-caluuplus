@@ -22,6 +22,10 @@
     </a>
 </div>
 
+<div style="margin-bottom: 1rem;">
+    <a href="{% url 'dashboard-user-detail' student.user.id %}" class="btn btn-secondary btn-sm">Open User Detail</a>
+</div>
+
 <div class="grid-2">
     <!-- Personal Information -->
     <div class="card">
@@ -29,9 +33,13 @@
             <h3 class="card-title">Personal Information</h3>
         </div>
         <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
-            <div style="width: 64px; height: 64px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-hover)); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: bold;">
+            {% if student.user.profile_picture %}
+            <img src="{{ student.user.profile_picture }}" alt="{{ student.user.display_name }}" style="width: 64px; height: 64px; border-radius: 50%; object-fit: cover; border: 2px solid var(--accent);">
+            {% else %}
+            <div style="width: 64px; height: 64px; border-radius: 50%; background: linear-gradient(135deg, var(--accent), var(--accent-hover)); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: bold; color: white;">
                 {{ student.user.display_name|slice:":1"|upper }}
             </div>
+            {% endif %}
             <div>
                 <h3 style="margin-bottom: 0.25rem;">{{ student.user.display_name }}</h3>
                 <p style="color: var(--text-muted);">{{ student.user.email }}</p>
@@ -40,8 +48,8 @@
         
         <table style="width: 100%;">
             <tr>
-                <td style="color: var(--text-muted); padding: 0.5rem 0;">Gender</td>
-                <td style="padding: 0.5rem 0;">{{ student.user.gender|default:"Not specified"|title }}</td>
+                <td style="color: var(--text-muted); padding: 0.5rem 0;">Role</td>
+                <td style="padding: 0.5rem 0;">{% if student.user.is_student %}Student{% else %}Non-student{% endif %}</td>
             </tr>
             <tr>
                 <td style="color: var(--text-muted); padding: 0.5rem 0;">Phone</td>
@@ -122,10 +130,167 @@
             View Program
         </a>
         <a href="{% url 'dashboard-courses' %}?program={{ student.program.id }}" class="btn btn-secondary">
-            View Courses
+            View Program Courses
         </a>
     </div>
 </div>
+
+<!-- Selected Courses -->
+<div class="card" style="margin-top: 1.5rem;">
+    <div class="card-header">
+        <h3 class="card-title">Selected Courses ({{ selected_courses_count }})</h3>
+    </div>
+
+    {% if selected_courses %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Code</th>
+                    <th>Name</th>
+                    <th>Credits</th>
+                    <th>Type</th>
+                    <th>Semester</th>
+                    <th>Year</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for course in selected_courses %}
+                <tr>
+                    <td>{{ course.code|default:"-" }}</td>
+                    <td>{{ course.name|default:"-" }}</td>
+                    <td>{{ course.credits|default:"-" }}</td>
+                    <td>{% if course.type == 'elective' %}<span class="badge badge-warning">Elective</span>{% else %}<span class="badge badge-primary">Core</span>{% endif %}</td>
+                    <td>{{ course.semester|default:"-" }}</td>
+                    <td>{{ course.year|default:"-" }}</td>
+                    <td>
+                        <div class="actions">
+                            <button class="btn btn-secondary btn-sm" onclick="openEditCourseModal({{ forloop.counter0 }}, '{{ course.code|default:''|escapejs }}', '{{ course.name|default:''|escapejs }}', '{{ course.credits|default:0 }}', '{{ course.type|default:'core' }}', '{{ course.semester|default:1 }}', '{{ course.year|default:1 }}')">Edit</button>
+                            <form method="post" action="{% url 'dashboard-student-selected-course-delete' student.id forloop.counter0 %}" style="display:inline;">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h3>No selected courses</h3>
+        <p>This student has not selected any courses yet.</p>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Add Selected Course -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title">Add Selected Course</h3>
+    </div>
+    <form method="post" action="{% url 'dashboard-student-selected-course-add' student.id %}">
+        {% csrf_token %}
+        <div class="grid-3">
+            <div class="form-group">
+                <label class="form-label">Code</label>
+                <input type="text" name="code" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Credits</label>
+                <input type="number" name="credits" class="form-control" min="0" value="0" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Type</label>
+                <select name="type" class="form-control">
+                    <option value="core">Core</option>
+                    <option value="elective">Elective</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Semester</label>
+                <input type="number" name="semester" class="form-control" min="1" value="{{ student.semester }}" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Year</label>
+                <input type="number" name="year" class="form-control" min="1" value="{{ student.year }}" required>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Add Selected Course</button>
+    </form>
+</div>
+
+<!-- Edit Selected Course Modal -->
+<div class="modal-overlay" id="editCourseModal">
+    <div class="modal">
+        <h3 class="modal-title">Edit Selected Course</h3>
+        <form id="editCourseForm" method="post">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">Code</label>
+                <input type="text" name="code" id="editCourseCode" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Name</label>
+                <input type="text" name="name" id="editCourseName" class="form-control" required>
+            </div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label class="form-label">Credits</label>
+                    <input type="number" name="credits" id="editCourseCredits" class="form-control" min="0" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Type</label>
+                    <select name="type" id="editCourseType" class="form-control">
+                        <option value="core">Core</option>
+                        <option value="elective">Elective</option>
+                    </select>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="form-group">
+                    <label class="form-label">Semester</label>
+                    <input type="number" name="semester" id="editCourseSemester" class="form-control" min="1" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Year</label>
+                    <input type="number" name="year" id="editCourseYear" class="form-control" min="1" required>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeEditCourseModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openEditCourseModal(index, code, name, credits, type, semester, year) {
+    document.getElementById('editCourseCode').value = code || '';
+    document.getElementById('editCourseName').value = name || '';
+    document.getElementById('editCourseCredits').value = credits || 0;
+    document.getElementById('editCourseType').value = type || 'core';
+    document.getElementById('editCourseSemester').value = semester || 1;
+    document.getElementById('editCourseYear').value = year || 1;
+    document.getElementById('editCourseForm').action = '/api/dashboard/students/{{ student.id }}/selected-courses/' + index + '/edit/';
+    document.getElementById('editCourseModal').classList.add('active');
+}
+
+function closeEditCourseModal() {
+    document.getElementById('editCourseModal').classList.remove('active');
+}
+
+document.getElementById('editCourseModal').addEventListener('click', function(e) {
+    if (e.target === this) closeEditCourseModal();
+});
+</script>
 {% endblock %}
 
 

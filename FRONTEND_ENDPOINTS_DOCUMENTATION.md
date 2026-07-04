@@ -354,6 +354,42 @@ This document provides a comprehensive overview of all endpoints that the fronte
 ### POST /students/gpa/reset/
 **Purpose**: Reset all grades
 
+### POST /gpa/calculations/
+**Purpose**: Store GPA calculation usage event (privacy-preserving).
+**Privacy**:
+- Backend stores **ciphertext only** for GPA values (server-side automatic encryption).
+- Backend tracks usage counts/trends via metadata/timestamps.
+- No user passphrase prompt is required.
+
+**Request Body**:
+```json
+{
+  "gpa": 3.75,
+  "semester": 1,
+  "academic_year": 2,
+  "is_target": false
+}
+```
+
+**Optional backward-compatible encrypted fields** (older clients may still send):
+- `gpa_ciphertext`
+- `gpa_iv`
+- `gpa_salt`
+- `gpa_alg`
+
+**Response (201)**:
+```json
+{
+  "message": "Encrypted GPA calculation event saved successfully",
+  "id": "uuid",
+  "semester": 1,
+  "academic_year": 2,
+  "is_target": false,
+  "gpa_alg": "AES-GCM-PBKDF2",
+  "created_at": "2026-04-02T12:34:56Z"
+}
+```
+
 ---
 
 ## Timetable Endpoints
@@ -568,6 +604,33 @@ This document provides a comprehensive overview of all endpoints that the fronte
 
 ### GET /articles/saved/
 **Purpose**: Get saved articles
+
+### POST /admin/articles/
+**Purpose**: Create article (admin/staff authenticated)
+**Request Body (key fields)**:
+```json
+{
+  "title": "How to prepare for exams",
+  "content": "{\"type\":\"doc\",\"content\":[]}",
+  "excerpt": "Quick preparation checklist",
+  "category": "general",
+  "tags": ["study", "tips"],
+  "is_published": true
+}
+```
+**Category behavior**:
+- `category` is **optional**
+- Default category is **`general`** when omitted
+- `null` / empty category is coerced to `general`
+- Category is normalized to lowercase before save
+- Allowed values: `academic`, `campus_life`, `news`, `events`, `general`
+
+### PUT/PATCH /admin/articles/{id}/
+**Purpose**: Update article (author/admin/staff)
+**Category behavior**:
+- `category` is **optional**
+- If supplied as `null` / empty string, it is saved as `general`
+- Invalid category values are rejected
 
 ---
 

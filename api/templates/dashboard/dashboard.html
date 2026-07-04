@@ -85,7 +85,7 @@
     </div>
 </div>
 
-<!-- Charts Row 1: User Growth & GPA Usage -->
+<!-- Charts Row 1: User Growth & Combined Usage -->
 <div class="grid-2">
     <div class="card">
         <div class="card-header">
@@ -99,11 +99,11 @@
 
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title">GPA Calculator Usage (Last 30 Days)</h3>
-            <span class="badge badge-warning">{{ stats.gpa_calculations }} total</span>
+            <h3 class="card-title">Combined Usage Trend (Logins + GPA, Last 30 Days)</h3>
+            <span class="badge badge-warning">Quantized per day</span>
         </div>
         <div class="chart-container">
-            <canvas id="gpaUsageChart"></canvas>
+            <canvas id="combinedUsageChart"></canvas>
         </div>
     </div>
 </div>
@@ -129,35 +129,66 @@
     </div>
 </div>
 
-<!-- Charts Row 3: GPA Usage Analytics -->
+<!-- User Activity Tracking -->
 <div class="grid-2" style="margin-top: 0;">
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title">GPA Calculator Usage by Program</h3>
+            <h3 class="card-title">Top Active Users ({{ activity_days }} days)</h3>
+            <span class="badge badge-primary">Most usage</span>
         </div>
-        <div class="chart-container" style="height: 300px;">
-            <canvas id="gpaByProgramChart"></canvas>
+        {% if top_users %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Logins</th>
+                        <th>GPA</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in top_users %}
+                    <tr data-view-url="{% url 'dashboard-user-detail' row.id %}" style="cursor: pointer;">
+                        <td>
+                            <strong>{{ row.display_name }}</strong>
+                            <br><small style="color: var(--text-muted);">{{ row.email }}</small>
+                        </td>
+                        <td>{{ row.login_count }}</td>
+                        <td>{{ row.gpa_count }}</td>
+                        <td><span class="badge badge-success">{{ row.total_activity }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
+        {% else %}
+        <div class="empty-state"><p>No user activity in this range.</p></div>
+        {% endif %}
     </div>
 
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title">GPA Calculator Usage by Academic Year</h3>
+            <h3 class="card-title">Per-User Activity Timeline</h3>
         </div>
-        <div class="chart-container" style="height: 300px;">
-            <canvas id="gpaByYearChart"></canvas>
+        <form method="get" class="toolbar" style="margin-bottom: 0.5rem;">
+            <select name="activity_user" class="form-control" style="max-width: 260px;">
+                {% for activity_user in activity_users %}
+                <option value="{{ activity_user.id }}" {% if selected_activity_user and activity_user.id == selected_activity_user.id %}selected{% endif %}>
+                    {{ activity_user.display_name }} ({{ activity_user.email }})
+                </option>
+                {% endfor %}
+            </select>
+            <select name="activity_days" class="form-control" style="max-width: 140px;">
+                <option value="7" {% if activity_days == 7 %}selected{% endif %}>7 days</option>
+                <option value="30" {% if activity_days == 30 %}selected{% endif %}>30 days</option>
+                <option value="90" {% if activity_days == 90 %}selected{% endif %}>90 days</option>
+            </select>
+            <button type="submit" class="btn btn-secondary">Apply</button>
+        </form>
+        <div class="chart-container" style="height: 260px;">
+            <canvas id="userTimelineChart"></canvas>
         </div>
-    </div>
-</div>
-
-<!-- Login Activity Chart -->
-<div class="card" style="margin-top: 0;">
-    <div class="card-header">
-        <h3 class="card-title">Login Activity (Last 30 Days)</h3>
-        <span class="badge badge-success">Tracking site performance</span>
-    </div>
-    <div class="chart-container" style="height: 280px;">
-        <canvas id="loginActivityChart"></canvas>
     </div>
 </div>
 
@@ -167,7 +198,7 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title">Recent Registrations</h3>
-            <a href="{% url 'dashboard-students' %}" class="btn btn-secondary btn-sm">View All</a>
+            <a href="{% url 'dashboard-users' %}" class="btn btn-secondary btn-sm">View All</a>
         </div>
         {% if recent_users %}
         <div class="table-container">
@@ -180,7 +211,7 @@
                 </thead>
                 <tbody>
                     {% for user in recent_users %}
-                    <tr>
+                    <tr data-view-url="{% url 'dashboard-user-detail' user.id %}" style="cursor: pointer;">
                         <td>
                             <strong>{{ user.display_name }}</strong>
                             <br><small style="color: var(--text-muted);">{{ user.email }}</small>
@@ -215,7 +246,7 @@
                 </thead>
                 <tbody>
                     {% for login in recent_logins %}
-                    <tr>
+                    <tr data-view-url="{% url 'dashboard-user-detail' login.user.id %}" style="cursor: pointer;">
                         <td>
                             <strong>{{ login.user.display_name }}</strong>
                             <br><small style="color: var(--text-muted);">{{ login.user.email }}</small>
@@ -300,11 +331,10 @@
     // Data from Django
     const userGrowthData = {{ user_growth_data|safe }};
     const gpaUsageData = {{ gpa_usage_data|safe }};
-    const gpaByProgram = {{ gpa_by_program|safe }};
-    const gpaByYear = {{ gpa_by_year|safe }};
     const studentsByCollege = {{ students_by_college|safe }};
     const studentsByProgram = {{ students_by_program|safe }};
     const loginActivityData = {{ login_activity_data|safe }};
+    const userActivityTimeline = {{ user_activity_timeline|safe }};
 
     // 1. User Growth Chart (Line/Area)
     const userGrowthCtx = document.getElementById('userGrowthChart').getContext('2d');
@@ -346,33 +376,55 @@
         }
     });
 
-    // 2. GPA Usage Chart (Line)
-    const gpaUsageCtx = document.getElementById('gpaUsageChart').getContext('2d');
-    new Chart(gpaUsageCtx, {
+    // 2. Combined Usage Chart (Logins + GPA + Total)
+    const combinedUsageCtx = document.getElementById('combinedUsageChart').getContext('2d');
+    new Chart(combinedUsageCtx, {
         type: 'line',
         data: {
             labels: gpaUsageData.map(d => d.date),
             datasets: [{
-                label: 'Calculations',
+                label: 'Total Usage',
+                data: gpaUsageData.map((d, i) => d.count + (loginActivityData[i] ? loginActivityData[i].total_logins : 0)),
+                borderColor: colors.accent,
+                backgroundColor: colors.accentLight,
+                fill: true,
+                tension: 0.35,
+                pointRadius: 2,
+                pointHoverRadius: 5
+            }, {
+                label: 'Logins',
+                data: loginActivityData.map(d => d.total_logins),
+                borderColor: colors.success,
+                backgroundColor: 'transparent',
+                tension: 0.35,
+                borderDash: [6, 4],
+                pointRadius: 0
+            }, {
+                label: 'GPA Usage',
                 data: gpaUsageData.map(d => d.count),
                 borderColor: colors.warning,
-                backgroundColor: colors.warningLight,
-                fill: true,
-                tension: 0.4,
-                pointRadius: 2,
-                pointHoverRadius: 5,
+                backgroundColor: 'transparent',
+                tension: 0.35,
+                borderDash: [3, 3],
+                pointRadius: 0
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { display: false }
+                legend: {
+                    position: 'top',
+                    labels: {
+                        boxWidth: 12,
+                        padding: 12,
+                        font: { size: 11 }
+                    }
+                }
             },
             scales: {
                 y: {
                     beginAtZero: true,
-                    ticks: { stepSize: 1 },
                     grid: { color: colors.grid }
                 },
                 x: {
@@ -473,148 +525,55 @@
         programCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No program data</p></div>';
     }
 
-    // 5. GPA by Program (Vertical Bar with slanted labels - top 7)
-    const gpaProgramCtx = document.getElementById('gpaByProgramChart').getContext('2d');
-    if (gpaByProgram.length > 0) {
-        new Chart(gpaProgramCtx, {
-            type: 'bar',
-            data: {
-                labels: gpaByProgram.slice(0, 7).map(d => d.name.length > 20 ? d.name.substring(0, 20) + '...' : d.name),
-                datasets: [{
-                    label: 'Calculations',
-                    data: gpaByProgram.slice(0, 7).map(d => d.count),
-                    backgroundColor: colors.warningLight,
-                    borderColor: colors.warning,
-                    borderWidth: 1,
-                    borderRadius: 4,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: colors.grid },
-                        ticks: { stepSize: 1 }
-                    },
-                    x: {
-                        grid: { display: false },
-                        ticks: {
-                            font: { size: 9 },
-                            maxRotation: 45,
-                            minRotation: 45
-                        }
-                    }
-                }
-            }
-        });
-    } else {
-        gpaProgramCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No GPA data by program</p></div>';
-    }
-
-    // 6. GPA by Academic Year (Bar Chart)
-    const gpaYearCtx = document.getElementById('gpaByYearChart').getContext('2d');
-    if (gpaByYear.length > 0) {
-        new Chart(gpaYearCtx, {
-            type: 'bar',
-            data: {
-                labels: gpaByYear.map(d => 'Year ' + d.year),
-                datasets: [{
-                    label: 'Calculations',
-                    data: gpaByYear.map(d => d.count),
-                    backgroundColor: [
-                        'rgba(0, 191, 255, 0.7)',
-                        'rgba(0, 217, 165, 0.7)',
-                        'rgba(255, 193, 7, 0.7)',
-                        'rgba(155, 89, 182, 0.7)',
-                    ],
-                    borderColor: [
-                        'rgba(0, 191, 255, 1)',
-                        'rgba(0, 217, 165, 1)',
-                        'rgba(255, 193, 7, 1)',
-                        'rgba(155, 89, 182, 1)',
-                    ],
-                    borderWidth: 1,
-                    borderRadius: 6,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false }
-                },
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        grid: { color: colors.grid },
-                        ticks: { stepSize: 1 }
-                    },
-                    x: {
-                        grid: { display: false }
-                    }
-                }
-            }
-        });
-    } else {
-        gpaYearCtx.canvas.parentElement.innerHTML = '<div class="empty-state"><p>No GPA data by academic year</p></div>';
-    }
-
-    // 7. Login Activity (Area Chart)
-    const loginCtx = document.getElementById('loginActivityChart').getContext('2d');
-    new Chart(loginCtx, {
+    // 5. Per-user timeline (Line Chart)
+    const userTimelineCtx = document.getElementById('userTimelineChart').getContext('2d');
+    new Chart(userTimelineCtx, {
         type: 'line',
         data: {
-            labels: loginActivityData.map(d => d.date),
+            labels: userActivityTimeline.map(d => d.date),
             datasets: [{
-                label: 'Unique Users',
-                data: loginActivityData.map(d => d.unique_users),
-                borderColor: colors.success,
-                backgroundColor: colors.successLight,
+                label: 'Total Activity',
+                data: userActivityTimeline.map(d => d.total),
+                borderColor: colors.accent,
+                backgroundColor: colors.accentLight,
                 fill: true,
-                tension: 0.4,
+                tension: 0.35,
                 pointRadius: 2,
             }, {
-                label: 'Total Logins',
-                data: loginActivityData.map(d => d.total_logins),
-                borderColor: colors.accent,
+                label: 'Logins',
+                data: userActivityTimeline.map(d => d.logins),
+                borderColor: colors.success,
                 backgroundColor: 'transparent',
-                borderDash: [5, 5],
-                tension: 0.4,
+                tension: 0.35,
                 pointRadius: 0,
+                borderDash: [6, 4],
+            }, {
+                label: 'GPA Usage',
+                data: userActivityTimeline.map(d => d.gpa),
+                borderColor: colors.warning,
+                backgroundColor: 'transparent',
+                tension: 0.35,
+                pointRadius: 0,
+                borderDash: [3, 3],
             }]
         },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        boxWidth: 12,
-                        padding: 15,
-                        font: { size: 11 }
-                    }
-                }
-            },
             scales: {
-                y: {
-                    beginAtZero: true,
-                    grid: { color: colors.grid }
-                },
-                x: {
-                    grid: { display: false },
-                    ticks: {
-                        maxTicksLimit: 10,
-                        font: { size: 10 }
-                    }
-                }
+                y: { beginAtZero: true, grid: { color: colors.grid } },
+                x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 10 } } }
             }
         }
+    });
+
+    // Double-click to open user detail from recent/top lists
+    document.querySelectorAll('tbody tr[data-view-url]').forEach(function(row) {
+        row.addEventListener('dblclick', function(e) {
+            if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && !e.target.closest('.actions')) {
+                window.location.href = this.getAttribute('data-view-url');
+            }
+        });
     });
 
     // Update charts on theme change

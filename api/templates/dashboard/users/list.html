@@ -1,0 +1,127 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Users{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Users</h1>
+        <div class="breadcrumb">
+            <a href="{% url 'dashboard-home' %}">Dashboard</a>
+            <span>/</span>
+            <span>Users</span>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="toolbar">
+        <form method="get" class="search-box" id="search-form">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input type="text" name="search" id="search-input" placeholder="Search users..." value="{{ search }}" class="form-control" autocomplete="off">
+        </form>
+        <select name="role" class="form-control" style="width: auto;" onchange="applyFilter('role', this.value)">
+            <option value="">All Roles</option>
+            <option value="student" {% if role_filter == 'student' %}selected{% endif %}>Student</option>
+            <option value="non_student" {% if role_filter == 'non_student' %}selected{% endif %}>Non-student</option>
+        </select>
+        <select name="profile" class="form-control" style="width: auto;" onchange="applyFilter('profile', this.value)">
+            <option value="">All Profiles</option>
+            <option value="has_profile" {% if profile_filter == 'has_profile' %}selected{% endif %}>Has Student Profile</option>
+            <option value="no_profile" {% if profile_filter == 'no_profile' %}selected{% endif %}>No Student Profile</option>
+        </select>
+    </div>
+
+    {% if users %}
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Joined</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for profile_user in users %}
+                <tr data-view-url="{% url 'dashboard-user-detail' profile_user.id %}" style="cursor: pointer;">
+                    <td><strong>{{ profile_user.display_name }}</strong></td>
+                    <td>{{ profile_user.email }}</td>
+                    <td>
+                        {% if profile_user.is_student %}
+                        <span class="badge badge-success">Student</span>
+                        {% else %}
+                        <span class="badge badge-warning">Non-student</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ profile_user.date_joined|date:"M d, Y H:i" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if users.has_other_pages %}
+    <div class="pagination">
+        {% if users.has_previous %}
+        <a href="?page={{ users.previous_page_number }}{% if search %}&search={{ search }}{% endif %}{% if role_filter %}&role={{ role_filter }}{% endif %}{% if profile_filter %}&profile={{ profile_filter }}{% endif %}">&laquo; Previous</a>
+        {% endif %}
+        {% for num in users.paginator.page_range %}
+            {% if users.number == num %}
+                <span class="current">{{ num }}</span>
+            {% elif num > users.number|add:'-3' and num < users.number|add:'3' %}
+                <a href="?page={{ num }}{% if search %}&search={{ search }}{% endif %}{% if role_filter %}&role={{ role_filter }}{% endif %}{% if profile_filter %}&profile={{ profile_filter }}{% endif %}">{{ num }}</a>
+            {% endif %}
+        {% endfor %}
+        {% if users.has_next %}
+        <a href="?page={{ users.next_page_number }}{% if search %}&search={{ search }}{% endif %}{% if role_filter %}&role={{ role_filter }}{% endif %}{% if profile_filter %}&profile={{ profile_filter }}{% endif %}">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="empty-state">
+        <h3>No users found</h3>
+        <p>No users match your current filters.</p>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+let searchTimeout;
+const searchInput = document.getElementById('search-input');
+if (searchInput) {
+    searchInput.addEventListener('input', function() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(function() {
+            const url = new URL(window.location);
+            url.searchParams.set('search', searchInput.value);
+            url.searchParams.delete('page');
+            const role = document.querySelector('select[name="role"]').value;
+            const profile = document.querySelector('select[name="profile"]').value;
+            if (role) url.searchParams.set('role', role); else url.searchParams.delete('role');
+            if (profile) url.searchParams.set('profile', profile); else url.searchParams.delete('profile');
+            window.location = url;
+        }, 450);
+    });
+}
+
+function applyFilter(name, value) {
+    const url = new URL(window.location);
+    if (value) url.searchParams.set(name, value);
+    else url.searchParams.delete(name);
+    url.searchParams.delete('page');
+    window.location = url;
+}
+
+document.querySelectorAll('tbody tr[data-view-url]').forEach(function(row) {
+    row.addEventListener('dblclick', function(e) {
+        if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'A' && !e.target.closest('.actions')) {
+            window.location.href = this.getAttribute('data-view-url');
+        }
+    });
+});
+</script>
+{% endblock %}

@@ -154,20 +154,57 @@ class OpportunitySerializer(serializers.ModelSerializer):
     university_name = serializers.CharField(source='university.name', read_only=True)
     days_remaining = serializers.SerializerMethodField(read_only=True)
     is_active = serializers.SerializerMethodField(read_only=True)
+    content = serializers.CharField(required=False, allow_blank=False)
+    description = serializers.CharField(required=False, write_only=True, source='content')
+    cover_image = serializers.FileField(required=False, write_only=True, source='cover_media')
+    application_url = serializers.URLField(required=False, allow_blank=True, allow_null=True)
+    start_date = serializers.DateField(required=False, allow_null=True)
+    end_date = serializers.DateField(required=False, allow_null=True)
 
     class Meta:
         model = Opportunity
         fields = [
             'id', 'university', 'university_name', 'category', 'title',
-            'cover_media', 'cover_media_url', 'media_type', 'content',
-            'created_by', 'created_by_name', 'created_at', 'updated_at',
+            'cover_media', 'cover_image', 'cover_media_url', 'media_type', 'content',
+            'description', 'created_by', 'created_by_name', 'created_at', 'updated_at',
             'start_date', 'end_date', 'application_url',
             'days_remaining', 'is_active', 'status'
         ]
         read_only_fields = [
             'id', 'cover_media_url', 'created_by_name', 'created_at', 'updated_at',
-            'days_remaining', 'is_active', 'status'
+            'days_remaining', 'is_active', 'status', 'created_by', 'media_type'
         ]
+
+    _EMPTY_VALUES = ('', None, 'null', 'undefined')
+
+    def _normalize_incoming_data(self, data):
+        """Coerce common frontend FormData/JSON quirks before field validation."""
+        if not hasattr(data, 'get'):
+            return data
+
+        mutable = data.copy() if hasattr(data, 'copy') else dict(data)
+
+        for field in ('application_url', 'start_date', 'end_date', 'university'):
+            if field in mutable and mutable[field] in self._EMPTY_VALUES:
+                mutable[field] = None
+
+        if 'category' in mutable and isinstance(mutable['category'], str):
+            category = mutable['category'].strip()
+            category_key = category.lower().replace(' ', '_').replace('-', '_')
+            valid_values = {choice[0] for choice in Opportunity.CATEGORY_CHOICES}
+            label_map = {
+                choice[1].lower().replace(' ', '_').replace('-', '_'): choice[0]
+                for choice in Opportunity.CATEGORY_CHOICES
+            }
+            if category_key in valid_values:
+                mutable['category'] = category_key
+            elif category_key in label_map:
+                mutable['category'] = label_map[category_key]
+
+        return mutable
+
+    def to_internal_value(self, data):
+        return super().to_internal_value(self._normalize_incoming_data(data))
 
     def validate_cover_media(self, value):
         """Validate cover media file."""
@@ -221,12 +258,26 @@ class OpportunitySerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
-        """Validate opportunity dates."""
+        """Validate opportunity fields and auto-fill university from student profile."""
+        if not data.get('content'):
+            raise serializers.ValidationError({'content': 'This field is required.'})
+
+        request = self.context.get('request')
+        if not data.get('university') and request and request.user.is_authenticated:
+            try:
+                data['university'] = request.user.student_profile.university
+            except AttributeError:
+                raise serializers.ValidationError({
+                    'university': 'University is required. Complete your student profile or provide a university ID.'
+                })
+
         start_date = data.get('start_date')
         end_date = data.get('end_date')
 
         if start_date and end_date and start_date > end_date:
-            raise serializers.ValidationError("Start date must be before or equal to end date.")
+            raise serializers.ValidationError({
+                'end_date': 'End date must be on or after the start date.'
+            })
 
         return data
 
