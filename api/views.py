@@ -442,8 +442,8 @@ def verify_token(request):
 @permission_classes([permissions.AllowAny])
 def refresh_token(request):
     """
-    Refresh access token using refresh token.
-    Expected payload: {"refresh": "<refresh_token>"}
+    Refresh access token ufsing refresh token.
+    Expected payload: {"reresh": "<refresh_token>"}
     """
     import logging
     logger = logging.getLogger(__name__)
@@ -963,6 +963,21 @@ def student_profile_create(request):
     serializer = StudentCreateUpdateSerializer(data=request.data, context={'request': request})
     if serializer.is_valid():
         student = serializer.save()
+        # Profile-completion reward, granted only after registration + phone
+        # verification + profile setup. Idempotent per user via the service.
+        if getattr(request.user, 'phone_verified', False):
+            try:
+                from tokens import services as token_service
+                token_service.reward(
+                    request.user,
+                    "PROFILE_COMPLETION",
+                    reference_key=f"profile_completion:{request.user.pk}",
+                    description="Profile completion reward",
+                    initiated_by="api",
+                )
+            except Exception as e:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning(f"Profile completion reward skipped: {str(e)}")
         return Response({
             'message': 'Student profile created successfully',
             'has_profile': True,
@@ -2153,6 +2168,23 @@ def gpa_calculation_create(request):
             academic_year=serializer.validated_data['academic_year'],
             is_target=serializer.validated_data['is_target']
         )
+
+        # Consumption routed through the central token service
+        # (purchased tokens first, then earned). Best-effort so a low balance
+        # does not block saving the encrypted GPA record.
+        try:
+            from tokens import services as token_service
+            token_service.consume(
+                request.user,
+                "GPA_CALCULATION",
+                reference_key=f"gpa:{gpa_calculation.id}",
+                description="GPA calculation",
+                content_object=gpa_calculation,
+                initiated_by="api",
+            )
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(f"GPA token consumption skipped: {str(e)}")
         
         return Response({
             'message': 'Encrypted GPA calculation event saved successfully',
@@ -2461,9 +2493,7 @@ def notification_delete(request, notification_id):
     return Response({'message': 'Notification deleted successfully'}, status=status.HTTP_200_OK)
 
 
-@api_view(['GET'])
-@permission_classes([permissions.IsAuthenticated])
-@api_view(['POST'])
+@api_view(['GET', 'POST'])
 @permission_classes([permissions.IsAuthenticated])
 def notification_create(request):
     """Create a new notification (individual or bulk)"""
@@ -3507,6 +3537,21 @@ def article_share(request, article_id):
     # Increment share count
     article.share_count += 1
     article.save(update_fields=['share_count'])
+    
+    # Reward the sharer via the central token service (idempotent per user+article).
+    try:
+        from tokens import services as token_service
+        token_service.reward(
+            request.user,
+            "ARTICLE_SHARE_REWARD",
+            reference_key=f"article_share:{request.user.pk}:{article.id}",
+            description=f"Reward for sharing article: {article.title}",
+            content_object=article,
+            initiated_by="api",
+        )
+    except Exception as e:  # noqa: BLE001 - never break sharing
+        import logging
+        logging.getLogger(__name__).warning(f"Share reward skipped: {str(e)}")
     
     return Response({
         'share_count': article.share_count,

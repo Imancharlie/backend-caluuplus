@@ -208,7 +208,7 @@ class ResourceAPITestCase(APITestCase):
         response = self.client.patch(
             f'/api/resources_opps/resources/{resource_id}/',
             update_data,
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -296,7 +296,7 @@ class OpportunityAPITestCase(APITestCase):
         response = self.client.post(
             '/api/resources_opps/opportunities/',
             self.opportunity_data,
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -328,7 +328,7 @@ class OpportunityAPITestCase(APITestCase):
                     'category': category,
                     'title': f'Test {category.title()} {i+1}'
                 },
-                content_type='application/json'
+                format='json'
             )
 
         # Filter by seminar category
@@ -352,7 +352,7 @@ class OpportunityAPITestCase(APITestCase):
         response1 = self.client.post(
             '/api/resources_opps/opportunities/',
             self.opportunity_data,
-            content_type='application/json'
+            format='json'
         )
 
         # Create opportunity for second university
@@ -363,7 +363,7 @@ class OpportunityAPITestCase(APITestCase):
                 'university': university2.id,
                 'title': 'Test Opportunity 2'
             },
-            content_type='application/json'
+            format='json'
         )
 
         # Filter by first university
@@ -397,7 +397,7 @@ class OpportunityAPITestCase(APITestCase):
                     **self.opportunity_data,
                     'title': f'Test Opportunity {i+1}'
                 },
-                content_type='application/json'
+                format='json'
             )
 
         response = self.client.get('/api/resources_opps/opportunities/stats/')
@@ -422,7 +422,7 @@ class OpportunityAPITestCase(APITestCase):
         response = self.client.post(
             '/api/resources_opps/opportunities/',
             invalid_data,
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -452,6 +452,7 @@ class OpportunityAPITestCase(APITestCase):
     def test_opportunity_active_status(self):
         """Test the is_active field calculation."""
         from datetime import date, timedelta
+        from .models import Opportunity as OppModel
         self.client.force_authenticate(user=self.user)
 
         # Create opportunity that starts tomorrow and ends in 7 days
@@ -464,10 +465,11 @@ class OpportunityAPITestCase(APITestCase):
         response = self.client.post(
             '/api/resources_opps/opportunities/',
             future_data,
-            content_type='application/json'
+            format='json'
         )
 
         # Should not be active yet (starts tomorrow)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['is_active'], False)
 
         # Create opportunity that is currently active
@@ -480,11 +482,23 @@ class OpportunityAPITestCase(APITestCase):
         response = self.client.post(
             '/api/resources_opps/opportunities/',
             active_data,
-            content_type='application/json'
+            format='json'
         )
 
-        # Should be active
-        self.assertEqual(response.data['is_active'], True)
+        # Newly created opportunities are pending moderation, so not active yet,
+        # even if their dates fall in the present.
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['is_active'], False)
+
+        # Simulate admin approval: once approved with active dating, is_active is True.
+        opp = OppModel.objects.get(id=response.data['id'])
+        opp.status = 'approved'
+        opp.is_active = True
+        opp.save()
+
+        detail = self.client.get(f"/api/resources_opps/opportunities/{opp.id}/")
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail.data['is_active'], True)
 
     def test_search_opportunities(self):
         """Test searching opportunities."""
@@ -494,7 +508,7 @@ class OpportunityAPITestCase(APITestCase):
         self.client.post(
             '/api/resources_opps/opportunities/',
             self.opportunity_data,
-            content_type='application/json'
+            format='json'
         )
 
         # Search by title
@@ -521,7 +535,7 @@ class OpportunityAPITestCase(APITestCase):
                 'start_date': '',
                 'end_date': '',
             },
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -538,7 +552,7 @@ class OpportunityAPITestCase(APITestCase):
                 'title': 'Alias Test',
                 'description': 'Submitted via description field.',
             },
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -555,7 +569,7 @@ class OpportunityAPITestCase(APITestCase):
                 'category': 'Online Course',
                 'title': 'Category Label Test',
             },
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -584,7 +598,7 @@ class OpportunityAPITestCase(APITestCase):
                 'title': 'Auto University Test',
                 'content': 'University should be inferred from profile.',
             },
-            content_type='application/json'
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)

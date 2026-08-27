@@ -284,6 +284,21 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 logger.error(f"Memory update failed for user {request.user.id}: {e}")
                 # Don't fail the entire request if memory update fails
 
+        # Charge for the Mr Caluu interaction via the central token service
+        # (purchased first, then earned). Best-effort so a low balance does not
+        # block the user experience.
+        try:
+            from tokens import services as token_service
+            token_service.consume(
+                request.user,
+                "MR_CALUU_MESSAGE",
+                reference_key=f"mrcaluu:{assistant_msg.id}" if assistant_msg else None,
+                description="Mr Caluu message",
+                initiated_by="chatbot",
+            )
+        except Exception as e:
+            logger.warning(f"Mr Caluu token consumption skipped for user {request.user.id}: {str(e)}")
+
         serializer = ConversationSerializer(conversation)
         total_time = time.time() - start_time
         logger.info(f"Message processing completed for user {request.user.id} in {total_time:.2f}s")

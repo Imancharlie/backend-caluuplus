@@ -20,13 +20,33 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularSwaggerView,
+    SpectacularRedocView,
+)
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("api.urls")),
     path("api/chatbot/", include("chatbot.urls")),
     path("api/import/", include("data_import.urls")),
     path('api/resources_opps/', include('resources_opps.urls')),
+    path("api/map/", include("caluu_map.urls")),
     path("backups/", include(("backups.urls", "backups"), namespace="backups")),
+    path("api/tokens/", include("tokens.urls")),
+    # OpenAPI documentation
+    path("api/docs/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path(
+        "api/docs/",
+        SpectacularSwaggerView.as_view(url_name="schema"),
+        name="swagger-ui",
+    ),
+    path(
+        "api/docs/redoc/",
+        SpectacularRedocView.as_view(url_name="schema"),
+        name="redoc",
+    ),
 ]
 
 # Serve media files during development

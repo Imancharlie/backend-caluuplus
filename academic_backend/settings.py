@@ -51,11 +51,15 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
+    "django_filters",
+    "drf_spectacular",
     "api",
     "chatbot",
     "data_import",
     "resources_opps",
     "backups",
+    "tokens",
+    "caluu_map",
 ]
 
 MIDDLEWARE = [
@@ -230,7 +234,33 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 12,
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
+
+# OpenAPI documentation (drf-spectacular)
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Caluu+ API',
+    'DESCRIPTION': (
+        'Caluu+ platform API including the Caluu Map (offline-first campus'
+        ' exploration and navigation) feature.'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+}
+
+# Caluu Map configuration
+# Set to True on a PostGIS-enabled PostgreSQL deployment to use real spatial
+# queries (ST_DWithin / ST_DistanceSphere). Falls back to an indexed
+# bounding-box + great-circle algorithm automatically when unavailable.
+CALUU_MAP_USE_POSTGIS = os.getenv("CALUU_MAP_USE_POSTGIS", "false").lower() == "true"
+# Maximum photo upload size in megabytes.
+CALUU_MAP_MAX_PHOTO_MB = int(os.getenv("CALUU_MAP_MAX_PHOTO_MB", "10"))
 
 # JWT Settings
 # Extended token lifetimes for better user experience

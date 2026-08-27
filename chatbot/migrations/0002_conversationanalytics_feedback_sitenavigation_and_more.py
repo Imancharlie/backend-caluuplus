@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("api", "0018_user_firebase_uid_user_profile_picture"),
+        ("api", "0025_alter_gpacalculation_gpa_alg_and_more"),
         ("chatbot", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]

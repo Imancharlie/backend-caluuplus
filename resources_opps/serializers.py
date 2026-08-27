@@ -38,13 +38,48 @@ class ResourceSerializer(serializers.ModelSerializer):
         if value.size > max_size:
             raise serializers.ValidationError(f"File size must be less than {max_size / (1024*1024):.1f}MB.")
 
-        # Validate file type based on content (magic numbers) if available
+        extension_to_type = {
+            '.pdf': 'pdf',
+            '.doc': 'doc',
+            '.docx': 'docx',
+            '.xls': 'xls',
+            '.xlsx': 'xlsx',
+            '.ppt': 'ppt',
+            '.pptx': 'pptx',
+            '.txt': 'txt',
+            '.zip': 'zip',
+            '.rar': 'rar',
+            '.jpg': 'image',
+            '.jpeg': 'image',
+            '.png': 'image',
+            '.gif': 'image',
+            '.webp': 'image',
+            '.mp4': 'video',
+            '.avi': 'video',
+            '.mov': 'video',
+            '.mp3': 'audio',
+            '.wav': 'audio',
+        }
+
+        file_name = value.name.lower()
+        ext_type = None
+        for ext, ftype in extension_to_type.items():
+            if file_name.endswith(ext):
+                ext_type = ftype
+                break
+
+        if ext_type:
+            # A known filename extension should be authoritative over content sniffing,
+            # so an upload named "*.pdf" is classified as pdf regardless of magic quirks.
+            self.context['file_type'] = ext_type
+            return value
+
+        # Unknown extension: fall back to magic-based content detection if available
         if MAGIC_AVAILABLE:
             try:
                 mime = magic.from_buffer(value.read(1024), mime=True)
                 value.seek(0)  # Reset file pointer
 
-                # Map MIME types to file types
                 mime_to_type = {
                     'application/pdf': 'pdf',
                     'application/msword': 'doc',
@@ -71,48 +106,14 @@ class ResourceSerializer(serializers.ModelSerializer):
                 if file_type == 'unknown':
                     raise serializers.ValidationError(f"Unsupported file type: {mime}")
 
-                # Store file type for later use
                 self.context['file_type'] = file_type
 
+            except serializers.ValidationError:
+                raise
             except Exception as e:
                 raise serializers.ValidationError(f"Could not determine file type: {str(e)}")
         else:
-            # Fallback: determine file type from extension
-            file_name = value.name.lower()
-            extension_to_type = {
-                '.pdf': 'pdf',
-                '.doc': 'doc',
-                '.docx': 'docx',
-                '.xls': 'xls',
-                '.xlsx': 'xlsx',
-                '.ppt': 'ppt',
-                '.pptx': 'pptx',
-                '.txt': 'txt',
-                '.zip': 'zip',
-                '.rar': 'rar',
-                '.jpg': 'image',
-                '.jpeg': 'image',
-                '.png': 'image',
-                '.gif': 'image',
-                '.webp': 'image',
-                '.mp4': 'video',
-                '.avi': 'video',
-                '.mov': 'video',
-                '.mp3': 'audio',
-                '.wav': 'audio',
-            }
-
-            file_type = 'unknown'
-            for ext, ftype in extension_to_type.items():
-                if file_name.endswith(ext):
-                    file_type = ftype
-                    break
-
-            if file_type == 'unknown':
-                raise serializers.ValidationError("Unsupported file type. Please upload PDF, DOC, XLS, PPT, TXT, ZIP, RAR, image, video, or audio files.")
-
-            # Store file type for later use
-            self.context['file_type'] = file_type
+            raise serializers.ValidationError("Unsupported file type. Please upload PDF, DOC, XLS, PPT, TXT, ZIP, RAR, image, video, or audio files.")
 
         return value
 
@@ -178,30 +179,34 @@ class OpportunitySerializer(serializers.ModelSerializer):
     _EMPTY_VALUES = ('', None, 'null', 'undefined')
 
     def _normalize_incoming_data(self, data):
-        """Coerce common frontend FormData/JSON quirks before field validation."""
+        """Coerce common frontend FormData/JSON quirks before field validation.
+
+        Operates in place on the parsed request data (a fresh object per request)
+        so we never deep-copy in-memory UploadedFile objects (QueryDict.copy()
+        deep-copies its datastore and fails with 'cannot pickle BufferedRandom'),
+        nor rebuild the container in a way that drops or rewraps file uploads.
+        """
         if not hasattr(data, 'get'):
             return data
 
-        mutable = data.copy() if hasattr(data, 'copy') else dict(data)
-
         for field in ('application_url', 'start_date', 'end_date', 'university'):
-            if field in mutable and mutable[field] in self._EMPTY_VALUES:
-                mutable[field] = None
+            if field in data and data.get(field) in self._EMPTY_VALUES:
+                data[field] = None
 
-        if 'category' in mutable and isinstance(mutable['category'], str):
-            category = mutable['category'].strip()
-            category_key = category.lower().replace(' ', '_').replace('-', '_')
+        category = data.get('category')
+        if category is not None and category not in self._EMPTY_VALUES and isinstance(category, str):
+            category_key = category.strip().lower().replace(' ', '_').replace('-', '_')
             valid_values = {choice[0] for choice in Opportunity.CATEGORY_CHOICES}
             label_map = {
                 choice[1].lower().replace(' ', '_').replace('-', '_'): choice[0]
                 for choice in Opportunity.CATEGORY_CHOICES
             }
             if category_key in valid_values:
-                mutable['category'] = category_key
+                data['category'] = category_key
             elif category_key in label_map:
-                mutable['category'] = label_map[category_key]
+                data['category'] = label_map[category_key]
 
-        return mutable
+        return data
 
     def to_internal_value(self, data):
         return super().to_internal_value(self._normalize_incoming_data(data))
@@ -214,17 +219,30 @@ class OpportunitySerializer(serializers.ModelSerializer):
             if value.size > max_size:
                 raise serializers.ValidationError(f"Media file size must be less than {max_size / (1024*1024):.1f}MB.")
 
-            # Validate media type
+            image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+            video_extensions = ['.mp4', '.avi', '.mov']
+
+            file_name = value.name.lower()
+            media_type = None
+            if any(file_name.endswith(ext) for ext in image_extensions):
+                media_type = 'image'
+            elif any(file_name.endswith(ext) for ext in video_extensions):
+                media_type = 'video'
+
+            if media_type:
+                # A known media extension is authoritative (avoids magic content-sniffing quirks)
+                self.context['media_type'] = media_type
+                return value
+
+            # Unknown extension: fall back to magic-based content detection if available
             if MAGIC_AVAILABLE:
                 try:
                     mime = magic.from_buffer(value.read(1024), mime=True)
                     value.seek(0)  # Reset file pointer
 
-                    # Check if it's an image or video
                     if not mime.startswith(('image/', 'video/')):
                         raise serializers.ValidationError(f"File must be an image or video, got: {mime}")
 
-                    # Determine media type
                     if mime.startswith('image/'):
                         media_type = 'image'
                     elif mime.startswith('video/'):
@@ -232,28 +250,14 @@ class OpportunitySerializer(serializers.ModelSerializer):
                     else:
                         raise serializers.ValidationError("Unsupported media type.")
 
-                    # Store media type for later use
                     self.context['media_type'] = media_type
 
+                except serializers.ValidationError:
+                    raise
                 except Exception as e:
                     raise serializers.ValidationError(f"Could not determine media type: {str(e)}")
             else:
-                # Fallback: determine media type from extension
-                file_name = value.name.lower()
-                image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-                video_extensions = ['.mp4', '.avi', '.mov']
-
-                media_type = None
-                if any(file_name.endswith(ext) for ext in image_extensions):
-                    media_type = 'image'
-                elif any(file_name.endswith(ext) for ext in video_extensions):
-                    media_type = 'video'
-
-                if not media_type:
-                    raise serializers.ValidationError("File must be an image or video file.")
-
-                # Store media type for later use
-                self.context['media_type'] = media_type
+                raise serializers.ValidationError("File must be an image or video file.")
 
         return value
 

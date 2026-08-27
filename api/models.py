@@ -38,6 +38,16 @@ class User(AbstractUser):
     profile_picture = models.URLField(max_length=500, blank=True, null=True)
     hobbies = models.JSONField(default=list, blank=True, help_text="List of hobby IDs")
     
+    # NEW FIELDS for enhanced profile
+    bio = models.TextField(max_length=500, blank=True, help_text="Short bio/about me")
+    public_profile = models.BooleanField(default=True, help_text="Make profile visible to others")
+    show_email = models.BooleanField(default=False, help_text="Show email on public profile")
+    show_phone = models.BooleanField(default=False, help_text="Show phone on public profile")
+    phone_verified = models.BooleanField(default=False, help_text="Phone number verified via OTP")
+    social_links = models.JSONField(default=dict, blank=True, help_text="LinkedIn, Twitter, etc.")
+    achievements = models.JSONField(default=list, blank=True, help_text="Badges, awards, achievements")
+    tokens_balance = models.DecimalField(max_digits=10, decimal_places=0, default=0, help_text="Cached token balance")
+    
     objects = UserManager()
     
     USERNAME_FIELD = 'email'
@@ -532,6 +542,13 @@ class GPACalculation(models.Model):
     semester = models.IntegerField(help_text="Semester number (1 or 2)")
     academic_year = models.IntegerField(help_text="Academic year (1, 2, 3, etc.)")
     is_target = models.BooleanField(default=False, help_text="True if this is a target GPA calculation")
+    
+    # NEW FIELDS for enhanced GPA tracking
+    feedback = models.TextField(blank=True, help_text="User's explanation of GPA result vs expectation")
+    feedback_tokens_awarded = models.IntegerField(default=0, help_text="Tokens awarded for providing feedback")
+    is_planned = models.BooleanField(default=False, help_text="Was this a planned/target GPA calculation?")
+    planned_gpa_value = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True, help_text="Target GPA if planned")
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

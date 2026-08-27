@@ -35,21 +35,25 @@ class ResourceViewSet(viewsets.ModelViewSet):
         """Filter resources based on query parameters and user's university."""
         queryset = Resource.objects.all().order_by('-created_at')
 
-        # Filter by user's university (show their university + all universities)
+        # Filter by user's university (show their university + all universities + own uploads)
         if self.request.user.is_authenticated:
             try:
                 # Get user's university from Student profile
                 student_profile = self.request.user.student_profile
                 user_university_id = student_profile.university_id
 
-                # Show resources from user's university OR resources for all universities (university is null)
+                # Show user's own uploads, resources from user's university, OR universal resources
                 queryset = queryset.filter(
+                    Q(created_by=self.request.user) |
                     Q(university_id=user_university_id) |
                     Q(university__isnull=True)
                 )
             except:
-                # User doesn't have a student profile or other error, show only universal resources
-                queryset = queryset.filter(university__isnull=True)
+                # User doesn't have a student profile: show universal resources + their own uploads
+                queryset = queryset.filter(
+                    Q(created_by=self.request.user) |
+                    Q(university__isnull=True)
+                )
 
         # Additional filter by university if explicitly provided in query params (for admin/staff use)
         university_id = self.request.query_params.get('university')
@@ -321,6 +325,22 @@ class OpportunityViewSet(viewsets.ModelViewSet):
         opportunity.status = 'approved'
         opportunity.is_active = True
         opportunity.save()
+        
+        # Reward the contributor for an approved, published opportunity.
+        # Routed through the central token service; idempotent per opportunity.
+        if opportunity.created_by:
+            try:
+                from tokens import services as token_service
+                token_service.reward(
+                    opportunity.created_by,
+                    "OPPORTUNITY_APPROVED",
+                    reference_key=f"opportunity:{opportunity.id}",
+                    description=f"Reward for approved opportunity: {opportunity.title}",
+                    content_object=opportunity,
+                    initiated_by="opportunities",
+                )
+            except Exception as e:  # noqa: BLE001 - never let reward break approval
+                logger.error(f"Failed to reward opportunity approval {opportunity.id}: {str(e)}")
         
         # Send notification to creator when approved
         if opportunity.created_by:
@@ -613,6 +633,22 @@ class OpportunityViewSet(viewsets.ModelViewSet):
         
         opportunities = Opportunity.objects.filter(id__in=opportunity_ids)
         updated_count = opportunities.update(status='approved', is_active=True)
+        
+        # Reward contributors for each approved opportunity (idempotent).
+        from tokens import services as token_service
+        for opp in opportunities.select_related('created_by'):
+            if opp.created_by:
+                try:
+                    token_service.reward(
+                        opp.created_by,
+                        "OPPORTUNITY_APPROVED",
+                        reference_key=f"opportunity:{opp.id}",
+                        description=f"Reward for approved opportunity: {opp.title}",
+                        content_object=opp,
+                        initiated_by="opportunities",
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.error(f"Failed to reward opportunity approval {opp.id}: {str(e)}")
         
         return Response({
             'message': f'Successfully approved {updated_count} opportunity(ies)',
