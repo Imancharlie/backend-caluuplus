@@ -2,23 +2,27 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from decouple import config
+# Firebase initialization - optional, only if credentials exist and module is installed
+# Security
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-chb@r9zzss$o!gy+_(j6jt)wyxwkuif3ge+e^3$n%+3=ey6bea')
+DEBUG = config('DEBUG', default=False, cast=bool)
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,102.202.74.81,caluu-backendii.kodin.co.tz').split(',')
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Security
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-chb@r9zzss$o!gy+_(j6jt)wyxwkuif3ge+e^3$n%+3=ey6bea')
-DEBUG = config('DEBUG', default=False, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,102.202.74.81,caluu.kodin.co.tz').split(',')
-
 # Firebase initialization
-FIREBASE_CREDENTIALS_PATH = os.path.join(BASE_DIR, 'firebase-credentials.json')
+FIREBASE_CREDENTIALS_PATH = os.path.join(
+    BASE_DIR,
+    "firebase-credentials.json"
+)
 FIREBASE_INITIALIZED = False
 
 try:
     import firebase_admin
     from firebase_admin import credentials
-    
+
     if os.path.exists(FIREBASE_CREDENTIALS_PATH):
         try:
             cred = credentials.Certificate(FIREBASE_CREDENTIALS_PATH)
@@ -26,10 +30,36 @@ try:
             FIREBASE_INITIALIZED = True
         except Exception as e:
             print(f"Warning: Firebase initialization failed: {e}")
+            print(
+                "Firebase authentication will not be available. "
+                "Install firebase-admin and provide credentials to enable."
+            )
+    else:
+        print(
+            "Warning: Firebase credentials file not found. "
+            "Firebase authentication will not be available."
+        )
+
 except ImportError:
-    pass
+    print("Warning: firebase-admin not installed. "
+          "Firebase authentication will not be available.")
+    print("Install with: pip install firebase-admin")
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist
+# 
+# 
+# 
+# 
+# 
+#########i deleted my self##############################################
+# # SECURITY WARNING: keep the secret key used in production secret!
+# SECRET_KEY = "django-insecure-chb@r9zzss$o!gy+_(j6jt)wyxwkuif3ge+e^3$n%+3=ey6bea"
+# # SECURITY WARNING: don't run with debug turned on in production!
+# DEBUG = True
+
 
 # Application definition
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -39,12 +69,15 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "corsheaders",
+    "django_filters",
+    "drf_spectacular",
     "api",
     "chatbot",
     "data_import",
     "resources_opps",
     "backups",
     "tokens",
+    "caluu_map",
 ]
 
 MIDDLEWARE = [
@@ -57,6 +90,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
 
 ROOT_URLCONF = "academic_backend.urls"
 
@@ -78,72 +112,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "academic_backend.wsgi.application"
 
-# Database - PostgreSQL (fallback to SQLite if not configured)
-try:
-    db_name = config('DB_NAME', default='caluuplus')
-    db_user = config('DB_USER', default='caluuplus_user')
-    db_password = config('DB_PASSWORD', default='')
-    db_host = config('DB_HOST', default='localhost')
-    db_port = config('DB_PORT', default='5432')
-    
-    # Use PostgreSQL if password is set and PostgreSQL is installed, otherwise fallback to SQLite
-    # Temporarily force SQLite until PostgreSQL is installed
-    use_postgres = False
-    if db_password and db_password != 'your-postgres-password-here':
-        try:
-            import psycopg2
-            # Test connection
-            test_conn = psycopg2.connect(
-                host=db_host,
-                port=db_port,
-                database=db_name,
-                user=db_user,
-                password=db_password,
-                connect_timeout=5
-            )
-            test_conn.close()
-            use_postgres = True
-        except:
-            use_postgres = False
-    
-    if use_postgres:
-        DATABASES = {
-            "default": {
-                "ENGINE": "django.db.backends.postgresql",
-                "NAME": db_name,
-                "USER": db_user,
-                "PASSWORD": db_password,
-                "HOST": db_host,
-                "PORT": db_port,
-                "OPTIONS": {
-                    'connect_timeout': 10,
-                }
-            }
-        }
-    else:
-        DATABASES = {
-            "default": {
-                "ENGINE": "django.db.backends.sqlite3",
-                "NAME": BASE_DIR / "db.sqlite3",
-                "OPTIONS": {
-                    "timeout": 30,
-                    "check_same_thread": False,
-                }
-            }
-        }
-except:
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-            "OPTIONS": {
-                "timeout": 30,
-                "check_same_thread": False,
-            }
+
+# Database
+# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+        "OPTIONS": {
+            "timeout": 30,  # Increased timeout for database operations
+            "check_same_thread": False,  # Allow multiple threads to access database
         }
     }
+}
+
 
 # Password validation
+# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -159,38 +146,57 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
 # Internationalization
+# https://docs.djangoproject.com/en/5.1/topics/i18n/
+
 LANGUAGE_CODE = "en-us"
+
 TIME_ZONE = "Africa/Dar_es_Salaam"
+
 USE_I18N = True
+
 USE_TZ = True
 
-# Static files
+
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/5.1/howto/static-files/
+
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# Media files
+# Media files (User uploads)
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# Default primary key field type
+# https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Custom User Model
 AUTH_USER_MODEL = 'api.User'
 
-# API Keys
-GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
-ANTHROPIC_API_KEY = config('ANTHROPIC_API_KEY', default='')
+# Gemini API Key
+# Uses environment variable if set; otherwise falls back to the provided key so you can run without env vars.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "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")
 
-# Pricing configuration
-ANTHROPIC_INPUT_USD_PER_TOKEN = float(config('ANTHROPIC_INPUT_USD_PER_TOKEN', '0.00000025'))
-ANTHROPIC_OUTPUT_USD_PER_TOKEN = float(config('ANTHROPIC_OUTPUT_USD_PER_TOKEN', '0.00000125'))
-USD_TO_TSH_RATE = float(config('USD_TO_TSH_RATE', '2700'))
+# Pricing configuration 
+# Cost per token in USD for Anthropic Claude (Haiku) – adjust as needed
+ANTHROPIC_INPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_INPUT_USD_PER_TOKEN", "0.00000025"))
+ANTHROPIC_OUTPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_OUTPUT_USD_PER_TOKEN", "0.00000125"))
+USD_TO_TSH_RATE = float(os.getenv("USD_TO_TSH_RATE", "2700"))
 
-# Anthropic API Rate Limiting
-ANTHROPIC_MIN_REQUEST_INTERVAL = float(config('ANTHROPIC_MIN_REQUEST_INTERVAL', '3'))
+# Anthropic API Rate Limiting Configuration
+# Adjust based on your API tier to prevent rate limit errors while maintaining good UX:
+# - Free tier (5 req/min): Use 12 seconds for safety
+# - Paid tier (50 req/min): Use 1.2 seconds
+# - Development/Testing: Use 2-3 seconds for faster iteration
+# Note: Per-user throttling allows multiple users simultaneously
+ANTHROPIC_MIN_REQUEST_INTERVAL = float(os.getenv("ANTHROPIC_MIN_REQUEST_INTERVAL", "3"))
 
-# Chatbot links
+# Canonical frontend routes for link tags used by Mr. Caluu
 CHATBOT_LINKS = {
     "dashboard": "/dashboard",
     "articles": "/articles",
@@ -209,7 +215,7 @@ CHATBOT_LINKS = {
     "forgot_password": "/forgot-password",
 }
 
-# CORS settings
+# CORS settings for frontend
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
@@ -232,6 +238,8 @@ CORS_ALLOW_METHODS = [
     'POST',
     'PUT',
 ]
+
+# Allow media files to be accessed from frontend
 CORS_URLS_REGEX = r'^/(api|media)/.*$'
 
 # JWT Authentication
@@ -244,14 +252,55 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 12,
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+        'rest_framework.filters.SearchFilter',
+        'rest_framework.filters.OrderingFilter',
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
+# OpenAPI documentation (drf-spectacular)
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Caluu+ API',
+    'DESCRIPTION': (
+        'Caluu+ platform API including the Caluu Map (offline-first campus'
+        ' exploration and navigation) feature.'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'COMPONENT_SPLIT_REQUEST': True,
+}
+
+# Caluu Map configuration
+# Set to True on a PostGIS-enabled PostgreSQL deployment to use real spatial
+# queries (ST_DWithin / ST_DistanceSphere). Falls back to an indexed
+# bounding-box + great-circle algorithm automatically when unavailable.
+CALUU_MAP_USE_POSTGIS = os.getenv("CALUU_MAP_USE_POSTGIS", "false").lower() == "true"
+# Maximum photo upload size in megabytes.
+CALUU_MAP_MAX_PHOTO_MB = int(os.getenv("CALUU_MAP_MAX_PHOTO_MB", "10"))
+
+# JWT Settings
+# Extended token lifetimes for better user experience
+# Users will stay authenticated for up to 7 days even after closing the tab
 SIMPLE_JWT = {
+    # Access token valid for 7 days (168 hours)
+    # This allows users to stay authenticated even after closing the browser tab
     'ACCESS_TOKEN_LIFETIME': timedelta(days=7),
+    
+    # Refresh token valid for 14 days (2 weeks)
+    # Provides extra buffer for token refresh
     'REFRESH_TOKEN_LIFETIME': timedelta(days=14),
+    
+    # Rotate refresh tokens on each use for better security
     'ROTATE_REFRESH_TOKENS': True,
+    
+    # Blacklist old refresh tokens after rotation
     'BLACKLIST_AFTER_ROTATION': True,
+    
+    # Update last login timestamp
     'UPDATE_LAST_LOGIN': True,
+    
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
     'VERIFYING_KEY': None,
@@ -273,7 +322,7 @@ SIMPLE_JWT = {
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=14),
 }
 
-# Logging configuration - Production
+# Logging configuration - show logs in terminal
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -287,67 +336,58 @@ LOGGING = {
             'format': '[{levelname}] {message}',
             'style': '{',
         },
+        'detailed': {
+            'format': '[{levelname}] {asctime} [{name}] {pathname}:{lineno}\n{message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
         },
-        'file': {
-            'class': 'logging.handlers.RotatingFileHandler',
-            'filename': BASE_DIR / 'logs' / 'django.log',
-            'maxBytes': 1024 * 1024 * 10,  # 10 MB
-            'backupCount': 5,
-            'formatter': 'verbose',
-        },
     },
     'root': {
-        'handlers': ['console', 'file'],
-        'level': 'INFO',
+        'handlers': ['console'],
+        'level': 'DEBUG',  # Changed to DEBUG to see all logs
     },
     'loggers': {
         'api': {
-            'handlers': ['console', 'file'],
-            'level': 'INFO',
+            'handlers': ['console'],
+            'level': 'DEBUG',  # Show all API logs including DEBUG, INFO, WARNING, ERROR
             'propagate': False,
         },
         'chatbot': {
-            'handlers': ['console', 'file'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'django': {
-            'handlers': ['console', 'file'],
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'django.request': {
-            'handlers': ['console', 'file'],
-            'level': 'ERROR',
+            'handlers': ['console'],
+            'level': 'ERROR',  # Show Django request errors
             'propagate': False,
         },
     },
 }
 
-# Email Configuration
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = int(config('EMAIL_PORT', default='587'))
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default='true').lower() == 'true'
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@caluuplus.com')
-
-# Backup Configuration
-BACKUP_ROOT = Path(config('BACKUP_ROOT', default=str(BASE_DIR / 'backups_storage')))
-BACKUP_NOTIFY_EMAIL = config('BACKUP_NOTIFY_EMAIL', default='')
-OPPORTUNITY_REVIEW_NOTIFY_EMAIL = config('OPPORTUNITY_REVIEW_NOTIFY_EMAIL', default='kodinsoftwares@gmail.com')
-OPPORTUNITY_ADMIN_REVIEW_URL = config('OPPORTUNITY_ADMIN_REVIEW_URL', default='https://caluu.kodin.co.tz/admin/opportunities')
-
-# Security settings for production
-SECURE_BROWSER_XSS_FILTER = True
-SECURE_CONTENT_TYPE_NOSNIFF = True
-X_FRAME_OPTIONS = 'DENY'
-SECURE_SSL_REDIRECT = False  # Set to True if using HTTPS directly
-SESSION_COOKIE_SECURE = False  # Set to True if using HTTPS directly
-CSRF_COOKIE_SECURE = False  # Set to True if using HTTPS directly
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.smtp.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "true").lower() == "true"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@caluuplus.com")
+BACKUP_ROOT = Path(os.getenv("BACKUP_ROOT", BASE_DIR / "backups_storage"))
+BACKUP_NOTIFY_EMAIL = os.getenv("BACKUP_NOTIFY_EMAIL", "")
+OPPORTUNITY_REVIEW_NOTIFY_EMAIL = os.getenv(
+    "OPPORTUNITY_REVIEW_NOTIFY_EMAIL", "kodinsoftwares@gmail.com"
+)
+OPPORTUNITY_ADMIN_REVIEW_URL = os.getenv(
+    "OPPORTUNITY_ADMIN_REVIEW_URL", "https://caluu.kodin.co.tz/admin/opportunities"
+)
