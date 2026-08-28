@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from .models import User, University, College, Program, Course, Student, StudentCourse, Article, Slide, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, StudentTerm, StudentCourseEnrollment
 
@@ -192,11 +193,17 @@ class StudentSerializer(serializers.ModelSerializer):
     university = UniversitySerializer(read_only=True)
     college = CollegeSerializer(read_only=True)
     program = ProgramSerializer(read_only=True)
-    courses = serializers.JSONField(source='student_courses.courses', read_only=True)
+    courses = serializers.SerializerMethodField()
     has_courses = serializers.BooleanField(read_only=True)
     class Meta:
         model = Student
         fields = ('id', 'university', 'college', 'program', 'year', 'semester', 'courses', 'has_courses')
+
+    def get_courses(self, obj):
+        try:
+            return obj.student_courses.courses or []
+        except ObjectDoesNotExist:
+            return []
 
 
 class StudentCreateUpdateSerializer(serializers.ModelSerializer):
