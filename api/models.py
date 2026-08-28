@@ -69,9 +69,24 @@ class User(AbstractUser):
 
 
 class University(models.Model):
+    GRADE_SCHEME_GRADES = 'grades'
+    GRADE_SCHEME_MARKS = 'marks'
+    GRADE_SCHEMES = [
+        (GRADE_SCHEME_GRADES, 'Letter grades (A, B+, B...)'),
+        (GRADE_SCHEME_MARKS, 'Marks (0-100)'),
+    ]
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=200)
     country = models.CharField(max_length=100)
+    grade_scheme = models.CharField(max_length=10, choices=GRADE_SCHEMES, default=GRADE_SCHEME_GRADES,
+                                    help_text="How grades are entered/computed for this university")
+    grade_scheme_config = models.JSONField(default=dict, blank=True,
+        help_text=(
+            "Optional per-university grading configuration. For 'grades': "
+            "{'letter_points': {'A':5,'B+':4,'B':3,'C':2,'D':1,'E':0}}. For 'marks': "
+            "{'max_marks':100,'pass_mark':40,'thresholds':[[70,0.2,-10.5],...]} where each "
+            "row is [min_marks, slope, intercept] mapping marks to points."
+        ))
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -190,6 +205,62 @@ class StudentCourse(models.Model):
         self.courses = filtered
         self.save()
         return True
+
+
+class StudentTerm(models.Model):
+    """A student's academic term (a specific academic_year + semester).
+
+    This is the anchor for per-year/per-semester course history. Each student
+    has one row per (academic_year, semester) they have engaged with, enabling
+    a 4th-year student to see (and compute GPA from) their 1st-year data.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name='terms')
+    academic_year = models.IntegerField(help_text="Academic year (1, 2, 3, ...)")
+    semester = models.IntegerField(help_text="Semester (1 or 2)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['student', 'academic_year', 'semester']
+        ordering = ['academic_year', 'semester']
+
+    def __str__(self):
+        return f"{self.student.user.display_name} - Yr{self.academic_year} Sem{self.semester}"
+
+
+class StudentCourseEnrollment(models.Model):
+    """A course the student is enrolled in / entered grades for, within one term.
+
+    `course` links to the master Course catalog when it exists; it is nullable so
+    custom/freestyle courses not in the catalog can still be stored (code/name/
+    credits/type are denormalized to survive without a master row).
+    """
+    COURSE_TYPES = [
+        ('core', 'Core'),
+        ('elective', 'Elective'),
+    ]
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    term = models.ForeignKey(StudentTerm, on_delete=models.CASCADE, related_name='enrollments')
+    course = models.ForeignKey(Course, on_delete=models.SET_NULL, related_name='student_enrollments',
+                               null=True, blank=True)
+    code = models.CharField(max_length=20)
+    name = models.CharField(max_length=200)
+    credits = models.IntegerField(default=0)
+    type = models.CharField(max_length=10, choices=COURSE_TYPES, default='core')
+    grade = models.CharField(max_length=4, blank=True, null=True, help_text="Letter grade e.g. 'A', 'B+'")
+    marks = models.IntegerField(blank=True, null=True, help_text="Raw marks (0-100) for marks-based schemes")
+    points = models.DecimalField(max_digits=4, decimal_places=2, blank=True, null=True,
+                                 help_text="Grade point value (0.00-5.00)")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['term', 'code']
+        ordering = ['code']
+
+    def __str__(self):
+        return f"{self.term} - {self.code}"
 
 
 class TimetableSlot(models.Model):

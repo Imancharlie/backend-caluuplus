@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
-from .models import User, University, College, Program, Course, Student, StudentCourse, Article, Slide, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink
+from .models import User, University, College, Program, Course, Student, StudentCourse, Article, Slide, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, StudentTerm, StudentCourseEnrollment
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -207,6 +207,66 @@ class StudentCreateUpdateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class StudentTermSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StudentTerm
+        fields = ('id', 'academic_year', 'semester', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+
+class TermCourseSerializer(serializers.ModelSerializer):
+    course_id = serializers.UUIDField(source='course_id', read_only=True)
+
+    class Meta:
+        model = StudentCourseEnrollment
+        fields = ('id', 'course_id', 'code', 'name', 'credits', 'type',
+                  'grade', 'marks', 'points', 'updated_at')
+        read_only_fields = ('id', 'points', 'updated_at')
+
+
+class TermCourseInputSerializer(serializers.Serializer):
+    id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    course_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    course_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    course_name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    credits = serializers.IntegerField(required=False, allow_null=True)
+    credit_hour = serializers.IntegerField(required=False, allow_null=True)
+
+    type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    is_elective = serializers.BooleanField(required=False, allow_null=True)
+
+    grade = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    marks = serializers.IntegerField(required=False, allow_null=True, min_value=0, max_value=100)
+
+    def validate(self, data):
+        if data.get('course_id') and not data.get('id'):
+            data['id'] = data['course_id']
+        if data.get('course_code') and not data.get('code'):
+            data['code'] = data['course_code']
+        if data.get('course_name') and not data.get('name'):
+            data['name'] = data['course_name']
+        if data.get('credit_hour') is not None and data.get('credits') is None:
+            data['credits'] = data['credit_hour']
+        if data.get('is_elective') is not None and not data.get('type'):
+            data['type'] = 'elective' if data['is_elective'] else 'core'
+        if data.get('type'):
+            data['type'] = 'elective' if str(data['type']).strip().lower() in ('elective', 'optional') else 'core'
+        return data
+
+
+class TermCoursesUpdateSerializer(serializers.Serializer):
+    courses = TermCourseInputSerializer(many=True)
+
+
+class TermGradesUpdateSerializer(serializers.Serializer):
+    courses = TermCourseInputSerializer(many=True, required=False, default=list)
 
 
 class GPABreakdownSerializer(serializers.Serializer):
