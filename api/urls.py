@@ -99,6 +99,7 @@ urlpatterns = [
     
     # User search for notifications
     path('users/search/', views.user_search, name='user-search'),
+    path('users/<uuid:user_id>/public-profile/', views.user_public_profile, name='user-public-profile'),
 
     # Notification endpoints
     path('notifications/unread-count/', views.notification_unread_count, name='notification-unread-count'),
@@ -129,6 +130,8 @@ urlpatterns = [
     path('articles/<uuid:article_id>/save/', views.article_save, name='article-save'),
     path('articles/<uuid:article_id>/share/', views.article_share, name='article-share'),
     path('articles/saved/', views.article_saved, name='article-saved'),
+    path('articles/<uuid:article_id>/comments/', views.article_comments, name='article-comments'),
+    path('articles/<uuid:article_id>/comments/<uuid:comment_id>/', views.article_comment_detail, name='article-comment-detail'),
     
     # Admin Article Management endpoints
     path('admin/articles/', views.admin_article_create, name='admin-article-create'),  # POST

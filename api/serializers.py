@@ -3,7 +3,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
-from .models import User, University, College, Program, Course, Student, StudentCourse, Article, Slide, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, StudentTerm, StudentCourseEnrollment
+from .models import User, University, College, Program, Course, Student, StudentCourse, Article, ArticleComment, Slide, HelpMessage, Quote, Notification, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, StudentTerm, StudentCourseEnrollment
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -393,6 +393,37 @@ class ArticleSerializer(serializers.ModelSerializer):
         if is_published is True and not instance.published_at and not validated_data.get('published_at'):
             validated_data['published_at'] = timezone.now()
         return super().update(instance, validated_data)
+
+
+class ArticleCommentAuthorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('id', 'display_name', 'profile_picture')
+
+
+class ArticleCommentSerializer(serializers.ModelSerializer):
+    author = ArticleCommentAuthorSerializer(source='user', read_only=True)
+    parent_id = serializers.UUIDField(source='parent.id', read_only=True, allow_null=True)
+    replies_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ArticleComment
+        fields = ('id', 'body', 'parent_id', 'author', 'replies_count', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'parent_id', 'author', 'replies_count', 'created_at', 'updated_at')
+
+    def get_replies_count(self, obj):
+        return obj.replies.count()
+
+
+class ArticleCommentCreateSerializer(serializers.Serializer):
+    body = serializers.CharField(allow_blank=False, max_length=2000)
+    parent_id = serializers.UUIDField(required=False, allow_null=True)
+
+    def validate_body(self, value):
+        value = (value or '').strip()
+        if not value:
+            raise serializers.ValidationError('Comment body cannot be empty.')
+        return value
 
 
 class SlideSerializer(serializers.ModelSerializer):

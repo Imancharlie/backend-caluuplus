@@ -11,8 +11,9 @@ from django.db import models
 import re
 import time
 from .gpa_privacy import encrypt_gpa_for_user
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation
 from .serializers import ArticleSerializer
+from .serializers import ArticleCommentSerializer, ArticleCommentCreateSerializer
 from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university
 from .permissions import user_is_admin, user_is_ambassador
 from .serializers import (
@@ -3570,6 +3571,163 @@ def article_saved(request):
         'next': None,
         'previous': None
     }, status=status.HTTP_200_OK)
+
+
+def _comment_edit_delete_permission(comment, user):
+    """Return True if the user may edit/delete a comment (owner, article author, or admin)."""
+    is_owner = comment.user_id == user.id
+    is_article_author = comment.article.author_id == user.id
+    is_admin = user_is_admin(user) or getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False)
+    return is_owner or is_article_author or is_admin
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([permissions.IsAuthenticatedOrReadOnly])
+def article_comments(request, article_id):
+    """List (GET) and create (POST) comments on an article.
+
+    GET  /articles/<uuid>/comments/?page=&page_size=  -> paginated comment list
+    POST /articles/<uuid>/comments/  {body, parent_id?} -> new comment
+    """
+    try:
+        article = Article.objects.get(id=article_id, is_published=True)
+    except Article.DoesNotExist:
+        return Response({'error': 'Article not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = max(1, min(int(request.query_params.get('page_size', 50)), 100))
+        except (TypeError, ValueError):
+            page_size = 50
+
+        queryset = article.comments.all().select_related('user')
+        total = queryset.count()
+        offset = (page - 1) * page_size
+        items = queryset[offset:offset + page_size]
+        serializer = ArticleCommentSerializer(items, many=True)
+        return Response({
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+            'next_page': page + 1 if offset + len(items) < total else None,
+            'previous_page': page - 1 if page > 1 else None,
+            'results': serializer.data,
+        }, status=status.HTTP_200_OK)
+
+    # POST
+    serializer = ArticleCommentCreateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({
+            'error': 'Validation failed',
+            'details': serializer.errors,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    parent = None
+    parent_id = serializer.validated_data.get('parent_id')
+    if parent_id is not None:
+        try:
+            parent = ArticleComment.objects.get(id=parent_id, article=article)
+        except ArticleComment.DoesNotExist:
+            return Response({'error': 'Parent comment not found for this article'}, status=status.HTTP_400_BAD_REQUEST)
+
+    comment = ArticleComment.objects.create(
+        article=article,
+        user=request.user,
+        parent=parent,
+        body=serializer.validated_data['body'],
+    )
+    return Response(ArticleCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['PATCH', 'DELETE'])
+@permission_classes([permissions.IsAuthenticated])
+def article_comment_detail(request, article_id, comment_id):
+    """Update (PATCH) or delete (DELETE) a single comment."""
+    try:
+        comment = ArticleComment.objects.select_related('user', 'article').get(id=comment_id, article_id=article_id)
+    except ArticleComment.DoesNotExist:
+        return Response({'error': 'Comment not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _comment_edit_delete_permission(comment, request.user):
+        return Response({'error': 'You do not have permission to modify this comment'}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == 'PATCH':
+        body = (request.data.get('body') or '').strip()
+        if not body:
+            return Response({'error': 'Comment body cannot be empty'}, status=status.HTTP_400_BAD_REQUEST)
+        comment.body = body
+        comment.save(update_fields=['body', 'updated_at'])
+        return Response(ArticleCommentSerializer(comment).data, status=status.HTTP_200_OK)
+
+    # DELETE
+    deleted_id = str(comment.id)
+    comment.delete()
+    return Response({'ok': True, 'deleted_id': deleted_id}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def user_public_profile(request, user_id):
+    """Public profile for a user, used for author navigation.
+
+    GET /users/<uuid>/public-profile/
+    """
+    user = get_object_or_404(User, pk=user_id)
+    if not user.public_profile:
+        return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    page_size = 20
+
+    university = None
+    try:
+        sp = user.student_profile
+        if sp and sp.university_id:
+            university = {
+                'id': str(sp.university.id),
+                'name': sp.university.name,
+                'country': sp.university.country,
+            }
+    except Exception:  # noqa: BLE001 - no student profile is fine
+        university = None
+
+    articles_qs = Article.objects.filter(author=user, is_published=True).order_by('-created_at')
+    total = articles_qs.count()
+    articles = [
+        {
+            'id': str(a.id),
+            'title': a.title,
+            'excerpt': a.excerpt,
+            'category': a.category,
+            'likes': a.likes,
+            'views': a.views,
+            'created_at': a.created_at,
+            'cover_image': a.cover_image.url if a.cover_image else None,
+        }
+        for a in articles_qs[:page_size]
+    ]
+
+    profile = {
+        'id': str(user.id),
+        'display_name': user.display_name,
+        'email': user.email if user.show_email else None,
+        'phone_number': user.phone_number if user.show_phone else None,
+        'profile_picture': user.profile_picture,
+        'bio': user.bio,
+        'university': university,
+        'articles': articles,
+        'articles_count': total,
+        'articles_page': 1,
+        'articles_page_size': page_size,
+        'opportunities': [],
+        'opportunities_count': 0,
+        'opportunities_page': 1,
+        'opportunities_page_size': 20,
+    }
+    return Response(profile, status=status.HTTP_200_OK)
 
 
 # Admin Article Management Endpoints
