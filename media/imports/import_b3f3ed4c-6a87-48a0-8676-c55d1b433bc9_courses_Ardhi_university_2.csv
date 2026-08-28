@@ -1,0 +1,553 @@
+program,year,semester,name,code,credit,is_elective
+Bachelor of Architecture,1,1,Design Studio 1,AR 111,20,false
+Bachelor of Architecture,1,1,Physical Modelling and Fine Art,AR 121,4,false
+Bachelor of Architecture,1,1,Building Construction 1,AR 131,4,false
+Bachelor of Architecture,1,1,Building Materials 1,AR 141,4,false
+Bachelor of Architecture,1,1,Basic Mathematics,IS 149,8,false
+Bachelor of Architecture,1,1,Environmental Science 1,AR 165,4,false
+Bachelor of Architecture,1,1,English Language,CS 101,8,false
+Bachelor of Architecture,1,1,Introduction to Information Communication Technology,IS 161,8,false
+Bachelor of Architecture,1,1,Development Perspectives,DS 101,8,false
+Bachelor of Architecture,1,2,Design studio Project II,AR 112,20,false
+Bachelor of Architecture,1,2,Architectural Graphics Communication I,AR 122,4,false
+Bachelor of Architecture,1,2,Building Construction II,AR 132,4,false
+Bachelor of Architecture,1,2,Building Materials I,AR 142,4,false
+Bachelor of Architecture,1,2,Building Structures I,AR 151,4,false
+Bachelor of Architecture,1,2,Theory of Architecture I,AR 161,4,false
+Bachelor of Architecture,1,2,Communication Skills,DS 102,8,false
+Bachelor of Architecture,1,2,Development Perspectives II,CS 102,8,false
+Bachelor of Architecture,1,2,Topographical Surveying,GM 112,8,false
+Bachelor of Architecture,1,2,Industrial Training I,AR 181,8,false
+Bachelor of Architecture,2,1,Design Studio III,AR 213,20,false
+Bachelor of Architecture,2,1,Architectural Graphics Communication II,AR 223,4,false
+Bachelor of Architecture,2,1,Building Construction III,AR 233,8,false
+Bachelor of Architecture,2,1,Building Materials III,AR 243,8,false
+Bachelor of Architecture,2,1,Building Structures,AR 252,4,false
+Bachelor of Architecture,2,1,History of Architecture II,AR 262,8,false
+Bachelor of Architecture,2,1,Environmental Science II,AR 266,8,false
+Bachelor of Architecture,2,1,Introduction to land Surveying,GM 111,8,false
+Bachelor of Architecture,2,2,Design Studio Project IV,AR 214,20,false
+Bachelor of Architecture,2,2,Architectural Graphics Communication III,AR 224,4,false
+Bachelor of Architecture,2,2,Building Construction IV,AR 234,8,false
+Bachelor of Architecture,2,2,Building Materials IV,AR 244,8,false
+Bachelor of Architecture,2,2,Structures III,AR 253,4,false
+Bachelor of Architecture,2,2,Environmental Science III,AR 267,4,false
+Bachelor of Architecture,2,2,Professional Practice I,AR 225,4,false
+Bachelor of Architecture,2,2,Basics of Quantity Surveying I,QC 220,8,false
+Bachelor of Architecture,2,2,Settlement Planning I,AR 271,4,false
+Bachelor of Architecture,2,2,Industrial Training II,AR 282,8,false
+Bachelor of Architecture,3,1,Design Studio,AR 315,20,false
+Bachelor of Architecture,3,1,Building Construction V,AR 335,8,false
+Bachelor of Architecture,3,1,Building Structures IV,AR 354,8,false
+Bachelor of Architecture,3,1,Building Services I,AR 357,8,false
+Bachelor of Architecture,3,1,History and Theory of Architecture III,AR 363,8,false
+Bachelor of Architecture,3,1,Professional Practice II,AR 326,8,false
+Bachelor of Architecture,3,1,Construction Economics II,QC 435,8,false
+Bachelor of Architecture,3,2,Design Studio,AR 316,20,false
+Bachelor of Architecture,3,2,Building Construction VI,AR 336,8,false
+Bachelor of Architecture,3,2,Structures V,AR 355,8,false
+Bachelor of Architecture,3,2,Building Services II,AR 358,8,false
+Bachelor of Architecture,3,2,Settlement Planning II,AR 372,8,false
+Bachelor of Architecture,3,2,Urban Design,AR 373,8,false
+Bachelor of Architecture,3,2,Industrial Training III,AR 383,8,false
+Bachelor of Architecture,4,1,Design Studio VII,AR 417,20,false
+Bachelor of Architecture,4,1,Building Construction VII,AR 437,8,false
+Bachelor of Architecture,4,1,Building Structures VI,AR 456,8,false
+Bachelor of Architecture,4,1,Building Services III,AR 459,8,false
+Bachelor of Architecture,4,1,History and Theory of Architecture IV,AR 464,8,false
+Bachelor of Architecture,4,1,Architectural Conservation,AR 491,8,true
+Bachelor of Architecture,4,1,Urban Development and Housing,AR 492,8,true
+Bachelor of Architecture,4,1,Architectural Science,AR 493,8,true
+Bachelor of Architecture,4,1,Building Information Modeling,AR 494,8,true
+Bachelor of Architecture,4,2,Design Studio VIII,AR 418,20,false
+Bachelor of Architecture,4,2,Professional Practice III,AR 427,8,false
+Bachelor of Architecture,4,2,Research Methodology,LM 238,8,false
+Bachelor of Architecture,4,2,Entrepreneurship,BB 313,8,false
+Bachelor of Architecture,4,2,Industrial Training IV,AR 484,8,false
+Bachelor of Architecture,5,1,Design Studio,AR 519,24,false
+Bachelor of Architecture,5,1,Pre-dissertation,AR 585,36,false
+Bachelor of Architecture,5,2,Dissertation,AR 586,60,false
+Bachelor of Science in Landscape Architecture,1,1,Design Studio Projects I,LA 111,20,false
+Bachelor of Science in Landscape Architecture,1,1,Physical Modeling and Fine Art,AR 121,4,false
+Bachelor of Science in Landscape Architecture,1,1,Landscape Construction and Services I,LA 131,8,false
+Bachelor of Science in Landscape Architecture,1,1,Landscape Materials I,LA 141,8,false
+Bachelor of Science in Landscape Architecture,1,1,Fundamentals of Soil and Botanic Sciences,LA 161,12,false
+Bachelor of Science in Landscape Architecture,1,1,Introduction to Land Surveying,GM 111,8,false
+Bachelor of Science in Landscape Architecture,1,1,English Language,CS 101,8,false
+Bachelor of Science in Landscape Architecture,1,1,Introduction to ICT,IS 161,8,false
+Bachelor of Science in Landscape Architecture,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Landscape Architecture,1,1,Basic Mathematics,IS 149,8,false
+Bachelor of Science in Landscape Architecture,1,2,Studio Design Project II,LA112,20,false
+Bachelor of Science in Landscape Architecture,1,2,Design Graphics I,LA122,4,false
+Bachelor of Science in Landscape Architecture,1,2,Landscape Construction and Services II,LA132,4,false
+Bachelor of Science in Landscape Architecture,1,2,Landscape Materials II,LA142,4,false
+Bachelor of Science in Landscape Architecture,1,2,History and Theory of Landscape Architecture I,LA151,4,false
+Bachelor of Science in Landscape Architecture,1,2,Principles of Landscape Design,LA154,4,false
+Bachelor of Science in Landscape Architecture,1,2,Communication Skills,CS102,8,false
+Bachelor of Science in Landscape Architecture,1,2,Development Perspectives II,DS102,8,false
+Bachelor of Science in Landscape Architecture,1,2,Topographical Surveying,GM112,8,false
+Bachelor of Science in Landscape Architecture,1,2,Industrial Training I Landscape Construction/ Botany Works.,LA171,8,false
+Bachelor of Science in Landscape Architecture,2,1,Studio Design Project III,LA213,20,false
+Bachelor of Science in Landscape Architecture,2,1,Design Graphics II,LA223,8,false
+Bachelor of Science in Landscape Architecture,2,1,Landscape Construction and Services III,LA233,8,false
+Bachelor of Science in Landscape Architecture,2,1,Landscape Material III,LA243,8,false
+Bachelor of Science in Landscape Architecture,2,1,History and Theory of Landscape Architecture II,LA252,8,false
+Bachelor of Science in Landscape Architecture,2,1,Applied Plant ecology and Taxonomy,LA262,12,false
+Bachelor of Science in Landscape Architecture,2,1,Geography and Landscape Sciences I,LA263,8,false
+Bachelor of Science in Landscape Architecture,2,2,Studio Design Project IV,LA214,20,false
+Bachelor of Science in Landscape Architecture,2,2,Design Graphics III,LA224,8,false
+Bachelor of Science in Landscape Architecture,2,2,Landscape Construction and Services IV,LA234,8,false
+Bachelor of Science in Landscape Architecture,2,2,Landscape Structures I,LA237,8,false
+Bachelor of Science in Landscape Architecture,2,2,Landscape Materials IV,LA244,8,false
+Bachelor of Science in Landscape Architecture,2,2,Geography and Landscape Science II,LA264,8,false
+Bachelor of Science in Landscape Architecture,2,2,Industrial Training II,LA272,8,false
+Bachelor of Science in Landscape Architecture,3,1,Studio Design Project V,LA315,20,false
+Bachelor of Science in Landscape Architecture,3,1,Landscape Construction and Services V,LA335,8,false
+Bachelor of Science in Landscape Architecture,3,1,Environment Planning and Development I,LA355,4,false
+Bachelor of Science in Landscape Architecture,3,1,History and Theory of Landscape Architecture III,LA353,8,false
+Bachelor of Science in Landscape Architecture,3,1,Landscape Structures II,LA 338,8,false
+Bachelor of Science in Landscape Architecture,3,1,Professional Practice I,LA372,8,false
+Bachelor of Science in Landscape Architecture,3,1,Landscape Infrastructure,LA 481,8,true
+Bachelor of Science in Landscape Architecture,3,1,Landscape Urbanism,LA 482,8,true
+Bachelor of Science in Landscape Architecture,3,1,Water Landscape,LA 483,8,true
+Bachelor of Science in Landscape Architecture,3,1,Landscape Conservation,LA 484,8,true
+Bachelor of Science in Landscape Architecture,3,2,Studio Design Project VI,LA316,20,false
+Bachelor of Science in Landscape Architecture,3,2,Landscape Construction and Services VI,LA336,8,false
+Bachelor of Science in Landscape Architecture,3,2,Environment Planning and Development II,LA356,4,false
+Bachelor of Science in Landscape Architecture,3,2,Professional Practice II,LA375,8,false
+Bachelor of Science in Landscape Architecture,3,2,Industrial Training III Professional Practice,LA373,8,false
+Bachelor of Science in Landscape Architecture,3,2,Entrepreneurship,BB313,8,false
+Bachelor of Science in Landscape Architecture,3,2,Research Methodology,LM238,8,false
+Bachelor of Science in Landscape Architecture,4,1,Studio Design Project VII,LA417,32,false
+Bachelor of Science in Landscape Architecture,4,1,Dissertation Part I,LA491,32,false
+Bachelor of Science in Landscape Architecture,4,2,Dissertation Part II,LA492,60,false
+Bachelor of Science in Interior Design,1,1,Interior Design Studio I,ID 111,20,false
+Bachelor of Science in Interior Design,1,1,Interior Graphics I,ID 121,4,false
+Bachelor of Science in Interior Design,1,1,History and Theory of Interior Design I,ID 151,4,false
+Bachelor of Science in Interior Design,1,1,Interior Building Materials I,ID 145,8,false
+Bachelor of Science in Interior Design,1,1,Building Construction I,AR 131,4,false
+Bachelor of Science in Interior Design,1,1,Environmental Science I,AR 165,8,false
+Bachelor of Science in Interior Design,1,1,English Language,CS 101,8,false
+Bachelor of Science in Interior Design,1,1,Introduction to ICT,IS 161,8,false
+Bachelor of Science in Interior Design,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Interior Design,1,1,Basic Mathematics,IS 149,8,false
+Bachelor of Science in Interior Design,1,2,Interior Design Studio II,ID 112,20,false
+Bachelor of Science in Interior Design,1,2,History and Theory of Interior Design II,ID 152,4,false
+Bachelor of Science in Interior Design,1,2,Industrial Training I,ID 171,8,false
+Bachelor of Science in Interior Design,1,2,Interior Graphics II,ID 122,4,false
+Bachelor of Science in Interior Design,1,2,Interior Building Materials II,ID 146,8,false
+Bachelor of Science in Interior Design,1,2,Building Structures I,AR 151,4,false
+Bachelor of Science in Interior Design,1,2,Building Construction II,AR 132,4,false
+Bachelor of Science in Interior Design,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Interior Design,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Interior Design,2,1,Interior Design Studio III,ID 213,20,false
+Bachelor of Science in Interior Design,2,1,Fine Arts and Visual Communication I,ID 223,4,false
+Bachelor of Science in Interior Design,2,1,History and Theory of Interior Design III,ID 253,4,false
+Bachelor of Science in Interior Design,2,1,Furnishing and Fittings I,AR 243,8,false
+Bachelor of Science in Interior Design,2,1,Building Services I,AR 357,8,false
+Bachelor of Science in Interior Design,2,1,Environmental Science II,AR 266,8,false
+Bachelor of Science in Interior Design,2,1,Introductions to Land Surveying,GM 111,8,false
+Bachelor of Science in Interior Design,2,2,Interior Design Studio IV,ID 214,20,false
+Bachelor of Science in Interior Design,2,2,Fine Arts and Visual Communication II,ID 224,4,false
+Bachelor of Science in Interior Design,2,2,History and Theory of Interior Design IV,ID 254,4,false
+Bachelor of Science in Interior Design,2,2,Furnishing and Fittings II,ID 244,8,false
+Bachelor of Science in Interior Design,2,2,Industrial Training II,ID 272,8,false
+Bachelor of Science in Interior Design,2,2,Professional Practice I,AR 225,8,false
+Bachelor of Science in Interior Design,2,2,Environmental Science III,AR 267,8,false
+Bachelor of Science in Interior Design,2,2,Basis of Quantity Surveying,CQ 220,8,false
+Bachelor of Science in Interior Design,3,1,Interior Design Studio V,ID 315,20,false
+Bachelor of Science in Interior Design,3,1,Interior Technology I,ID 341,4,false
+Bachelor of Science in Interior Design,3,1,Construction and Detailing,ID 331,4,false
+Bachelor of Science in Interior Design,3,1,Interior Product Design I,ID 318,8,false
+Bachelor of Science in Interior Design,3,1,Architectural Professional Practice II,AR 326,8,false
+Bachelor of Science in Interior Design,3,1,Building Services II,AR 358,8,false
+Bachelor of Science in Interior Design,3,1,Topographical Surveying,GM 112,8,false
+Bachelor of Science in Interior Design,3,1,Architectural Conservation,AR 491,8,true
+Bachelor of Science in Interior Design,3,1,Urban Development and Housing,AR 492,8,true
+Bachelor of Science in Interior Design,3,1,Architectural Science,AR 493,8,true
+Bachelor of Science in Interior Design,3,2,Interior Design Studio VI,ID 316,20,false
+Bachelor of Science in Interior Design,3,2,Furniture Design,ID 347,4,false
+Bachelor of Science in Interior Design,3,2,Interior Technology II,ID 342,4,false
+Bachelor of Science in Interior Design,3,2,Interior Product Design II,ID 319,8,false
+Bachelor of Science in Interior Design,3,2,Industrial Training III,ID 373,8,false
+Bachelor of Science in Interior Design,3,2,Research Methodology,LM 238,8,false
+Bachelor of Science in Interior Design,4,1,Interior Design Studio VII,ID 417,24,false
+Bachelor of Science in Interior Design,4,1,Portfolio Development,ID 461,4,false
+Bachelor of Science in Interior Design,4,1,Dissertation Part I,ID 474,24,false
+Bachelor of Science in Interior Design,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Interior Design,4,2,Dissertation Part II,ID 475,60,false
+Bachelor of Science in Interior Design,4,2,Architectural Professional Practice III,AR 427,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Basic Mathematics,IS 149,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Introduction to Information and Communication Technology (IS),IS 161,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Materials for Construction I,QC 121,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Engineering Mechanics,QC 111,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Building Construction I,QC 122,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Principles of Economics,EC 100,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Introduction to Land Surveying,GM 111,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,1,English Language,CS 101,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Materials for Construction II,QC 125,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Building Construction II,QC 126,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Topographical Surveying,GM 112,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Mechanics of Materials,QC 112,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Computer Aided Designs,QC 114,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Statistics and probability,IS 141,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,1,2,Industrial Training I,QC 153,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Building Construction III,QC 222,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Construction of Transportation Infrastructures,QC 224,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Design essentials for Reinforced Concrete Structures,QC 212,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Measurement of Building Works I,QC 232,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Accounting Fundamentals,BB 111,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Building Services I,QC 223,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Elements of Law,LM 171,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,1,Project Work I,QC 251,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Design of Timber and Steel Structures,QC 213,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Building Construction IV,QC 225,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Construction of Civil services Infrastructures,QC 226,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Measurement of Building Works II,QC 239,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Business Law,LM 178,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Building Services II,QC 227,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Project Work II,QC 252,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,2,2,Industrial Training II,QC 253,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Principles of Management,QC 341,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Measurement of Building Works III,QC 332,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Measurement of Mechanical Installations,QC 333,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Estimating and Price Analysis,QC 336,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Procurement,QC 338,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Measurement of Transportation Infrastructures,QC 334,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,1,Project Work III,QC 351,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Measurement of Civil Services Infrastructures,QC 330,12,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Construction Contracts,QC 337,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Construction Economics I,QC 335,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Measurement of External Works,QC 339,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Construction Management I,QC 342,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Measurement of Electrical and Telecommunications Installations,QC 331,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Project Work IV,QC 352,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,3,2,Industrial Training III,QC 353,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Research Methodology,LM 238,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Construction Economics II,QC 435,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Professional Practice for quantity surveyors,QC 437,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Construction Management II,QC 442,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Project Work V,QC 451,10,false
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Project Risk Management,CM 343,8,true
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Human Resource Management,QC 462,8,true
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,International Construction Management,CM 431,8,true
+Bachelor of Science in Quantity Surveying and Construction Economics,4,1,Introductions to Disaster Risk Management,DM 101,8,true
+Bachelor of Science in Quantity Surveying and Construction Economics,4,2,Dissertation,QC 452,60,false
+Bachelor of Science in Environmental Engineering,1,1,English Language,CS 101,8,false
+Bachelor of Science in Environmental Engineering,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Environmental Engineering,1,1,Engineering Mathematics I,IS 143,8,false
+Bachelor of Science in Environmental Engineering,1,1,Project I Introduction to Technical Report Writing,EE 143,8,false
+Bachelor of Science in Environmental Engineering,1,1,Engineering Drawing I,EE 161,8,false
+Bachelor of Science in Environmental Engineering,1,1,Workshop Training,EG 100,8,false
+Bachelor of Science in Environmental Engineering,1,1,Basic Chemistry,ES 112,8,false
+Bachelor of Science in Environmental Engineering,1,1,Introduction to Information and Communication Technology (ICT),IS 161,8,false
+Bachelor of Science in Environmental Engineering,1,2,Introduction to Municipal and Industrial Service Engineering,MI 111,8,false
+Bachelor of Science in Environmental Engineering,1,2,Engineering Mechanics I,EE 117,8,false
+Bachelor of Science in Environmental Engineering,1,2,Soil Mechanics and Geology,EE 115,8,false
+Bachelor of Science in Environmental Engineering,1,2,Construction Materials and Technology,EE 116,8,false
+Bachelor of Science in Environmental Engineering,1,2,Projects II Preliminary Design of a Low Cost Sanitation System,EE 122,8,false
+Bachelor of Science in Environmental Engineering,1,2,Basic and Ecological Sanitation,MI 121,8,false
+Bachelor of Science in Environmental Engineering,1,2,Engineering Drawing II,EE 162,12,false
+Bachelor of Science in Environmental Engineering,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Environmental Engineering,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Environmental Engineering,1,2,Industrial Training I,MI 151,8,false
+Bachelor of Science in Environmental Engineering,2,1,Engineering Mathematics II,IS 241,8,false
+Bachelor of Science in Environmental Engineering,2,1,Engineering Mechanics II,EE 218,8,false
+Bachelor of Science in Environmental Engineering,2,1,Building Services Engineering,EE 229,8,false
+Bachelor of Science in Environmental Engineering,2,1,Water Resources and Transportation Engineering,EE 231,12,false
+Bachelor of Science in Environmental Engineering,2,1,Project III Design of Water Supply and Wastewater Collection Systems for a building and community,EE 232,12,false
+Bachelor of Science in Environmental Engineering,2,1,Hydrology,EE 233,8,false
+Bachelor of Science in Environmental Engineering,2,1,Fluid Mechanics I,EE 238,8,false
+Bachelor of Science in Environmental Engineering,2,1,Introduction to Land Surveying,GM 111,8,false
+Bachelor of Science in Environmental Engineering,2,2,Engineering Mathematics III,IS 242,8,false
+Bachelor of Science in Environmental Engineering,2,2,Foundation Engineering,EE 214,8,false
+Bachelor of Science in Environmental Engineering,2,2,Sewerage and Drainage Engineering,EE 223,8,false
+Bachelor of Science in Environmental Engineering,2,2,Project IV Design of Sewerage and Drainage Systems for a Township,EE 224,12,false
+Bachelor of Science in Environmental Engineering,2,2,Fluid Mechanics II,EE 239,12,false
+Bachelor of Science in Environmental Engineering,2,2,Industrial Training II,EE 252,8,false
+Bachelor of Science in Environmental Engineering,2,2,Environmental Microbiology,EL 217,12,false
+Bachelor of Science in Environmental Engineering,2,2,Introduction to Engineering Surveying,GM 221,8,false
+Bachelor of Science in Environmental Engineering,3,1,Structural Analysis I,CE 212,8,false
+Bachelor of Science in Environmental Engineering,3,1,Basics of Quantity Surveying,CQ 220,8,false
+Bachelor of Science in Environmental Engineering,3,1,Unit Operations and Processes in Environmental Engineering,EE 325,12,false
+Bachelor of Science in Environmental Engineering,3,1,Hydraulic Structures,EE 337,8,false
+Bachelor of Science in Environmental Engineering,3,1,Environmental Health and Epidemiology,EE 343,8,false
+Bachelor of Science in Environmental Engineering,3,1,Project V Assessment and Engineering Control of Communicable Diseases,EE 344,8,false
+Bachelor of Science in Environmental Engineering,3,1,Environmental Chemistry,MI 329,12,false
+Bachelor of Science in Environmental Engineering,3,1,Thermofluids,EE 363,8,true
+Bachelor of Science in Environmental Engineering,3,1,Disaster Risk Management,ES 483,8,true
+Bachelor of Science in Environmental Engineering,3,1,Occupational Health and Safety,MI 234,8,true
+Bachelor of Science in Environmental Engineering,3,1,Industrial Wastewater Treatment,MI 446,8,true
+Bachelor of Science in Environmental Engineering,3,2,Structural Analysis II,CE 312,8,false
+Bachelor of Science in Environmental Engineering,3,2,Water Treatment Engineering,EE 334,8,false
+Bachelor of Science in Environmental Engineering,3,2,Project VI Design of Water Treatment and Municipal Solid Waste Management Systems for Community/Township,EE 335,12,false
+Bachelor of Science in Environmental Engineering,3,2,Pumps and Pumping Stations,EE 336,8,false
+Bachelor of Science in Environmental Engineering,3,2,Ecology,EE 347,8,false
+Bachelor of Science in Environmental Engineering,3,2,Industrial training III,EE 353,8,false
+Bachelor of Science in Environmental Engineering,3,2,Solid Waste Infrastructure Design and Management,MI 362,12,false
+Bachelor of Science in Environmental Engineering,3,2,Land and Water Pollution Prevention and Control,EE 366,8,false
+Bachelor of Science in Environmental Engineering,3,2,Project Management for Construction,EE 369,8,false
+Bachelor of Science in Environmental Engineering,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Environmental Engineering,4,1,Wastewater Treatment Technology,MI 429,8,false
+Bachelor of Science in Environmental Engineering,4,1,Environmental Systems Analysis,EE 465,8,false
+Bachelor of Science in Environmental Engineering,4,1,Environmental Policies and Legislation,EE 467,8,false
+Bachelor of Science in Environmental Engineering,4,1,Environmental Planning and Impact Assessment,ES 468,8,false
+Bachelor of Science in Environmental Engineering,4,1,Research Methodology,LM 238,8,false
+Bachelor of Science in Environmental Engineering,4,1,Project VII Design of Domestic and Industrial Wastewater Treatment facilities,MI 447,12,false
+Bachelor of Science in Environmental Engineering,4,2,Dissertation,EE 456,60,false
+Bachelor of Science in Civil Engineering,1,1,English Language,CS 101,8,false
+Bachelor of Science in Civil Engineering,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Civil Engineering,1,1,Introduction to Land Surveying,GM 111,8,false
+Bachelor of Science in Civil Engineering,1,1,Engineering Mathematics I,IS 143,8,false
+Bachelor of Science in Civil Engineering,1,1,Engineering Drawing,CE 101,8,false
+Bachelor of Science in Civil Engineering,1,1,Statics,CE 111,8,false
+Bachelor of Science in Civil Engineering,1,1,Basics of Building Construction,CE 161,7,false
+Bachelor of Science in Civil Engineering,1,1,Workshop Training,EG 100,8,false
+Bachelor of Science in Civil Engineering,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Civil Engineering,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Civil Engineering,1,2,Introduction to Engineering Surveying,GM 221,8,false
+Bachelor of Science in Civil Engineering,1,2,Computer Programming,IS 121,12,false
+Bachelor of Science in Civil Engineering,1,2,Dynamics of Solids,CE 112,8,false
+Bachelor of Science in Civil Engineering,1,2,Building Design,CE 162,8,false
+Bachelor of Science in Civil Engineering,1,2,Construction Materials I,CE 171,12,false
+Bachelor of Science in Civil Engineering,1,2,Industrial Training,CE 183,8,false
+Bachelor of Science in Civil Engineering,2,1,Structural Analysis I,CE 221,12,false
+Bachelor of Science in Civil Engineering,2,1,Engineering Mathematics II,IS 241,8,false
+Bachelor of Science in Civil Engineering,2,1,Civil Engineering Drawing,CE 201,12,false
+Bachelor of Science in Civil Engineering,2,1,Mechanics of Materials,CE 213,8,false
+Bachelor of Science in Civil Engineering,2,1,Fluid Mechanics,CE 242,8,false
+Bachelor of Science in Civil Engineering,2,1,Open Channel Hydraulics,CE 241,8,false
+Bachelor of Science in Civil Engineering,2,1,Construction Materials II,CE 271,12,false
+Bachelor of Science in Civil Engineering,2,2,Soil Mechanics and Geology,EE 115,8,false
+Bachelor of Science in Civil Engineering,2,2,Engineering Mathematics III,IS 242,8,false
+Bachelor of Science in Civil Engineering,2,2,Pumps and Pumping stations,EE 236,8,false
+Bachelor of Science in Civil Engineering,2,2,Fundamentals of Hydrology,CE 233,8,false
+Bachelor of Science in Civil Engineering,2,2,Traffic Engineering and Planning,CE 231,8,false
+Bachelor of Science in Civil Engineering,2,2,Highway Geometric Design,CE 232,8,false
+Bachelor of Science in Civil Engineering,2,2,Semester Project I,CE 282,12,false
+Bachelor of Science in Civil Engineering,2,2,Industrial Training,CE 283,8,false
+Bachelor of Science in Civil Engineering,3,1,Water Resources and Transportation Engineering,EE 231,12,false
+Bachelor of Science in Civil Engineering,3,1,Hydraulic Structures,EE 337,8,false
+Bachelor of Science in Civil Engineering,3,1,Structural Analysis II,CE 321,12,false
+Bachelor of Science in Civil Engineering,3,1,Design of Timber Structures,CE 322,8,false
+Bachelor of Science in Civil Engineering,3,1,Design of Steel Structures,CE 323,8,false
+Bachelor of Science in Civil Engineering,3,1,Waste water Treatment Technology,EE 427,12,false
+Bachelor of Science in Civil Engineering,3,1,Semester Project II,CE 381,12,false
+Bachelor of Science in Civil Engineering,3,2,Statistics and Probability,IS 141,8,false
+Bachelor of Science in Civil Engineering,3,2,Design of Reinforced Concrete Structures I,CE 324,12,false
+Bachelor of Science in Civil Engineering,3,2,Design of Masonry Structures,CE 325,8,false
+Bachelor of Science in Civil Engineering,3,2,Foundation Engineering,CE 351,8,false
+Bachelor of Science in Civil Engineering,3,2,Construction Project Management,CE 363,10,false
+Bachelor of Science in Civil Engineering,3,2,Pavement Materials and Design,CE 334,8,false
+Bachelor of Science in Civil Engineering,3,2,Semester Project III,CE 382,12,false
+Bachelor of Science in Civil Engineering,3,2,Industrial Training III,CE 383,8,false
+Bachelor of Science in Civil Engineering,3,2,Structural Analysis III,CE 421,8,true
+Bachelor of Science in Civil Engineering,3,2,Structural Dynamics,CE 426,8,true
+Bachelor of Science in Civil Engineering,3,2,Design of Bridges,CE 427,8,true
+Bachelor of Science in Civil Engineering,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Civil Engineering,4,1,Civil Engineering Procedures,CE 467,8,false
+Bachelor of Science in Civil Engineering,4,1,Construction Technology,CE 464,8,false
+Bachelor of Science in Civil Engineering,4,1,Construction Maintenance,CE 465,8,false
+Bachelor of Science in Civil Engineering,4,1,Professional Practice,CE 466,4,false
+Bachelor of Science in Civil Engineering,4,1,Research Methodology,LM 238,8,false
+Bachelor of Science in Civil Engineering,4,1,Design of Reinforced Concrete Structures II,CE 424,12,false
+Bachelor of Science in Civil Engineering,4,1,Semester Project IV,CE 481,12,false
+Bachelor of Science in Civil Engineering,4,1,Solid Waste Infrastructure Design and Management,EE 352,12,true
+Bachelor of Science in Civil Engineering,4,1,Pavement Maintenance and Rehabilitation,CE 433,8,true
+Bachelor of Science in Civil Engineering,4,1,Labour Based Road Engineering,CE 435,8,true
+Bachelor of Science in Civil Engineering,4,1,Airport Harbour and Railway Engineering,CE 436,8,true
+Bachelor of Science in Civil Engineering,4,1,Transportation Economics,CE 437,8,true
+Bachelor of Science in Civil Engineering,4,1,Introduction to Disaster Risk Management,DM 101,8,true
+Bachelor of Science in Civil Engineering,4,2,Dissertation,CE 484,60,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,English Language,CS 101,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Engineering Mathematics I,IS 143,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Project I Introduction to Technical Report Writing,EE 143,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Engineering Drawing I,EE 161,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Workshop Training,EG 100,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Basic Chemistry,ES 112,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,1,Introduction to Information and Communication Technology (ICT),IS 161,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Soil Mechanics and Geology,EE 115,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Construction Materials and Technology,EE 116,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Engineering Mechanics I,EE 117,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Introduction to Environmental Engineering,EE 121,12,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Project II Preliminary Design of a Low Cost Sanitation System,EE 122,12,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Industrial training I,EE 151,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,1,2,Engineering Drawing II,EE 162,12,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Traffic Engineering and Simulation,MI 218,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Engineering Mathematics II,IS 241,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Engineering Mechanics II,EE 218,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Building Services Engineering,EE 229,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Water Resources and Transportation Engineering,EE 231,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Project III Designs of Water Supply and Wastewater Collection Systems,EE 232,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Hydrology,EE 233,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Fluid Mechanics I,EE 238,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,1,Introduction to Land Surveying,GM 111,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Sewerage Engineering and Faecal Sludge Management,MI 214,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Urban Storm Water Management,MI 215,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Occupational Healths and Safety,MI 234,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Foundation Engineering,EE 214,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Project IV Design of Sewerage Stormwater and Faecal sludge systems,MI 217,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Fluid Mechanics II,EE 239,12,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Environmental Microbiology,EL 217,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Introduction to Engineering Surveying,GM 221,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,2,2,Industrial Training II,MI 252,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Municipal Infrastructures and Governance,MI 319,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Renewable and Alternative Energy,MI 323,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Mining, Petroleum and Gas Processing Waste Management,MI 331,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Industrial Utility and Safety Services Engineering,MI 341,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Industrial Ecology,MI 342,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Project V Occupational Health and Safety Systems,MI 343,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Structural Analysis I,CE 212,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Introduction to Quantity Surveying,CQ 220,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Environmental Chemistry,MI 329,8,true
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Disaster Risk Management,ES 483,8,true
+Bachelor of Science in Municipal and Industrial Services Engineering,3,1,Hydraulic Structures,EE 337,8,true
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Urban Infrastructure Planning and Management,MI 313,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,RS and GIS Applications in Municipal and Industrial Services Engineering,MI 322,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Solid Waste Infrastructure Design and Management,MI 326,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Managing water supply and sanitation in emergencies,MI 328,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Regulatory and Legal Frameworks on Establishment and Operation of Municipal Infrastructure,MI 310,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Project VI Design of Water Treatment and Municipal Solid Waste Management Systems,MI 335,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Fundamentals of Industrial Operations and Processes,MI 344,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Land and Water Pollution Prevention and Control,EE 366,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Water Treatment Engineering,EE 334,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,3,2,Industrial Training III,MI 353,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Municipal Wastewater Treatment Technology,MI 429,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Risk Assessment and Management of Mining Mineral Processing and Petroleum Operation/waste management,MI 432,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Industrial Wastewater Treatment,MI 446,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Project VII Design of Municipal and Industrial Wastewater Treatment Facilities,MI 447,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Research Methodology for Scientist,ES 491,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Air Pollution Prevention and Control,EE 467,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,1,Environmental Planning and Impact Assessment,ES 468,8,false
+Bachelor of Science in Municipal and Industrial Services Engineering,4,2,Dissertation,MI 454,60,false
+Bachelor of Science in Environmental Science and Management,1,1,Mathematics I,IS 144,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Basic Chemistry,ES 111,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Fundamentals of Biology,ES 112,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Principles of Physics,ES 113,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Introductions to ICT,IS 161,8,false
+Bachelor of Science in Environmental Science and Management,1,1,English Language,CS 101,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Introduction to land surveying,GM 111,8,false
+Bachelor of Science in Environmental Science and Management,1,1,Project I Introduction to Technical Report Writing,EE 143,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Statistics and Probability,IS 141,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Mathematics II,IS 145,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Introduction to Environmental Science,ES 121,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Environmental Geology,ES 122,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Environmental Pollution Sources Survey,ES 123,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Environmental Science and Management,1,2,Industrial Training I,ES 151,8,false
+Bachelor of Science in Environmental Science and Management,2,1,Instrumental Methods of Analysis,ES 214,12,false
+Bachelor of Science in Environmental Science and Management,2,1,Environmental Ecology,ES 224,8,false
+Bachelor of Science in Environmental Science and Management,2,1,Project III Assessment of Low Cost Sanitation Systems,ES 226,8,false
+Bachelor of Science in Environmental Science and Management,2,1,Water Supply and Sanitation,ES 231,12,false
+Bachelor of Science in Environmental Science and Management,2,1,Remote Sensing and Environment,ES 232,8,false
+Bachelor of Science in Environmental Science and Management,2,1,Geographical Information Systems,ES 233,8,false
+Bachelor of Science in Environmental Science and Management,2,1,Principles of Economics,ES 261,8,false
+Bachelor of Science in Environmental Science and Management,2,1,Hydrology,EE 233,8,false
+Bachelor of Science in Environmental Science and Management,2,2,Environmental Chemodynamics,ES 225,12,false
+Bachelor of Science in Environmental Science and Management,2,2,Scientific Experimental Design,ES 234,8,false
+Bachelor of Science in Environmental Science and Management,2,2,Toxicology and Risk Management,ES 242,12,false
+Bachelor of Science in Environmental Science and Management,2,2,Project IV Occupational Health and Safety,ES 243,8,false
+Bachelor of Science in Environmental Science and Management,2,2,Meteorology,ES 281,8,false
+Bachelor of Science in Environmental Science and Management,2,2,Occupational Health and Safety,MI 234,8,false
+Bachelor of Science in Environmental Science and Management,2,2,Environmental Microbiology,EL 217,12,false
+Bachelor of Science in Environmental Science and Management,2,2,Industrial Training II,ES 252,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Industrial and Municipal Wastewater Management,ES 335,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Soil Pollution and Remediation,ES 336,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Project VI Contaminated Site Remediation,ES 338,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Environmental Economics and Management,ES 362,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Surface water hydrometry and quality monitoring,ES 363,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Mining and Environment,ES 372,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Environmental Chemistry,MI 329,12,false
+Bachelor of Science in Environmental Science and Management,3,1,Environmental Compliance and Management,EL 215,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Environmental Health and Epidemiology,EE 343,8,false
+Bachelor of Science in Environmental Science and Management,3,1,Renewable and Alternative Energy,MI 323,8,true
+Bachelor of Science in Environmental Science and Management,3,1,Environmental Systems Analysis,EE 455,8,true
+Bachelor of Science in Environmental Science and Management,3,2,Principles and Application of Biotechnology,ES 337,8,false
+Bachelor of Science in Environmental Science and Management,3,2,Project V Waste Management,ES 364,8,false
+Bachelor of Science in Environmental Science and Management,3,2,Air Quality Monitoring and Management,ES 365,8,false
+Bachelor of Science in Environmental Science and Management,3,2,Groundwater Quality Monitoring and Management,ES 366,8,false
+Bachelor of Science in Environmental Science and Management,3,2,Introduction to Natural Resources Conservation and Management,ES 371,8,false
+Bachelor of Science in Environmental Science and Management,3,2,Soil Conservation and Management,ES 373,8,false
+Bachelor of Science in Environmental Science and Management,3,2,Solid Waste Management and Technology,EE 362,12,false
+Bachelor of Science in Environmental Science and Management,3,2,Industrial Training III,ES 351,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Hazardous Waste Management,ES 444,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Environmental Policies and Legislation,ES 467,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Environmental Planning and Impact Assessment,ES 468,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Agro-industrial waste Management,ES 469,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Environmental Management in Oil and Gas Industry,ES 474,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Climate Change Impact Mitigation and Adaptation,ES 482,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Disaster Risk Management,ES 483,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Research Methodology,ES 491,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Project VII Disaster Risk Reduction,ES 484,8,false
+Bachelor of Science in Environmental Science and Management,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Environmental Science and Management,4,2,Dissertation,MI 454,60,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Introduction to Environmental Laboratory Science and Technology,EL 111,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Fundamentals of Biology,ES 112,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Mathematics I,ISI 144,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Basic Chemistry,ES 111,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Project I Introduction to Technical Report Writing,EE 143,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Introduction to ICT,IS 151,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,Development Perspectives I,DS 101,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,1,English Language,CS 101,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Industrial Training I,EL 151,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Projects II Analytical Laboratory Survey,EL 162,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Laboratory Instrumentation,EL 165,12,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Mathematics II,ISI 145,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Soil Mechanics and Geology,EE 115,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Construction Materials and Technology,EE 116,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Communication Skills,CS 102,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,1,2,Development Perspectives II,DS 102,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Environmental Information System,EL 212,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Environmental Compliance and Management,EL 215,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Laboratory Technologies for Water Resources and Open Hydraulic Systems,EL 221,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Soil and Groundwater Pollution,EL 245,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Project IV Soil and Groundwater Pollution,EL 246,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Fluid Mechanics I,EE 238,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Laboratory Science and Technology for Soil analysis,EL 231,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,1,Scientific Experimental Design and Optimization,EL 214,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Environmental Microbiology,EL 217,12,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Laboratory Science and Technology for Water and Wastewater Analysis,EL 222,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Laboratory Science and Technology for Microbiological Analysis,EL 223,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Project IV Water and Wastewater Treatment,EL 224,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Water and Wastewater Management,EL 225,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Industrial Training II,EL 252,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,2,2,Toxicology and Risk Management,ES 242,12,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Solid and Hazardous Waste Management and Technology,EL 313,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Environmental Biotechnology,EL 318,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Waste Management in Oil and Gas Industries,EL 332,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Environmental Quality for Oil and Gas Laboratory analysis,EL 333,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Project V Oil and Gas waste management,EL 334,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Laboratory Science and Technology for Solid Waste and Sludge Analysis,EL 341,12,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Environmental Chemistry,MI 329,12,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Environmental Health and Epidemiology,EE 343,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Aquatic Pollution and Control,EL 319,8,true
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Proficiency Testing in Laboratory,EL 369,8,true
+Bachelor of Science in Environmental Laboratory Science and Technology,3,1,Disaster Management,DM 301,8,true
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Laboratory Science and Technology for Air Quality and Noise Analysis,EL 342,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Environmental Radiation Control,EL 343,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Decentralized Sanitation Biotechnologies,EL 347,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Industrial Training III,EL 353,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Project VI Technical Laboratory Plan,EL 361,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Laboratory Organization and Safety,EL 364,12,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Principles and Concepts of Laboratory Design,EL 367,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,3,2,Air Quality Monitoring and Management,ES 365,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Health Safety and Environment,EL 416,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Water and Sanitation Project Monitoring and Evaluation,EL 427,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Mining and Mineral Processing Waste Management,EL 435,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Environmental Monitoring,EL 444,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Project VII Design of Environmental Health and Safety Systems,EL 461,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Environmental Policies and Legislation,ES 467,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Environmental Planning and Impact Assessment,ES 468,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Research Methodology,LM 238,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,1,Entrepreneurship,BB 313,8,false
+Bachelor of Science in Environmental Laboratory Science and Technology,4,2,Dissertation,EL 454,60,false
