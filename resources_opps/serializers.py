@@ -181,19 +181,30 @@ class OpportunitySerializer(serializers.ModelSerializer):
     def _normalize_incoming_data(self, data):
         """Coerce common frontend FormData/JSON quirks before field validation.
 
-        Operates in place on the parsed request data (a fresh object per request)
-        so we never deep-copy in-memory UploadedFile objects (QueryDict.copy()
-        deep-copies its datastore and fails with 'cannot pickle BufferedRandom'),
-        nor rebuild the container in a way that drops or rewraps file uploads.
+        Builds a mutable plain dict so we never mutate an immutable QueryDict
+        (multipart without files yields Django's immutable request.POST, which
+        raises 'This QueryDict instance is immutable'), never deep-copy
+        in-memory UploadedFile objects (QueryDict.copy() fails with
+        'cannot pickle BufferedRandom'), and never rewraps file uploads.
         """
         if not hasattr(data, 'get'):
             return data
 
-        for field in ('application_url', 'start_date', 'end_date', 'university'):
-            if field in data and data.get(field) in self._EMPTY_VALUES:
-                data[field] = None
+        if hasattr(data, 'lists'):
+            # MultiValueDict / QueryDict: keep the last value per key, which
+            # preserves scalar field values and file upload objects as-is.
+            mutable = {k: (vs[-1] if vs else None) for k, vs in data.lists()}
+        else:
+            try:
+                mutable = dict(data)
+            except Exception:
+                mutable = data.copy() if hasattr(data, 'copy') else dict(data)
 
-        category = data.get('category')
+        for field in ('application_url', 'start_date', 'end_date', 'university'):
+            if field in mutable and mutable.get(field) in self._EMPTY_VALUES:
+                mutable[field] = None
+
+        category = mutable.get('category')
         if category is not None and category not in self._EMPTY_VALUES and isinstance(category, str):
             category_key = category.strip().lower().replace(' ', '_').replace('-', '_')
             valid_values = {choice[0] for choice in Opportunity.CATEGORY_CHOICES}
@@ -202,11 +213,11 @@ class OpportunitySerializer(serializers.ModelSerializer):
                 for choice in Opportunity.CATEGORY_CHOICES
             }
             if category_key in valid_values:
-                data['category'] = category_key
+                mutable['category'] = category_key
             elif category_key in label_map:
-                data['category'] = label_map[category_key]
+                mutable['category'] = label_map[category_key]
 
-        return data
+        return mutable
 
     def to_internal_value(self, data):
         return super().to_internal_value(self._normalize_incoming_data(data))
