@@ -30,6 +30,7 @@ class TransactionType(models.TextChoices):
     ARTICLE_SHARE_REWARD = "ARTICLE_SHARE_REWARD", "Article Share Reward"
     SURVEY_REWARD = "SURVEY_REWARD", "Survey Reward"
     SURVEY_QUESTION_REWARD = "SURVEY_QUESTION_REWARD", "Survey Question Reward"
+    COURSE_CONTRIBUTION = "COURSE_CONTRIBUTION", "Course Contribution"
     REFERRAL_REWARD = "REFERRAL_REWARD", "Referral Reward"
     TOKEN_PURCHASE = "TOKEN_PURCHASE", "Token Purchase"
     GPA_CONSUMPTION = "GPA_CONSUMPTION", "GPA Consumption"

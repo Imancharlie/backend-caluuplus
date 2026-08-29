@@ -84,6 +84,11 @@ urlpatterns = [
     path('students/courses/batch/', views.save_courses_batch, name='save-courses-batch'),
     path('students/courses/semester/<int:semester>/year/<int:year>/', views.get_student_courses_by_semester, name='get-courses-by-semester'),
     path('students/courses/filter/', views.get_student_courses_filtered, name='get-courses-filtered'),
+    path('students/courses/advance/', views.advance_student_period, name='advance-student-period'),
+    path('students/courses/period/<int:year>/<int:semester>/', views.get_student_course_period, name='get-student-course-period'),
+    path('students/courses/period/<int:year>/<int:semester>/save/', views.save_student_course_period, name='save-student-course-period'),
+    path('students/courses/period/<int:year>/<int:semester>/delete/', views.remove_student_course_period, name='remove-student-course-period'),
+    path('students/courses/period/<int:year>/<int:semester>/<uuid:course_id>/', views.remove_student_course_from_period, name='remove-student-course-from-period'),
     path('students/courses/<uuid:course_id>/', views.remove_course, name='remove-course'),
     
     # GPA Calculation endpoints

@@ -56,10 +56,11 @@ class EnhancedClaudeService:
                 student_courses: StudentCourse | None = getattr(student, "student_courses", None)
                 if student_courses and student_courses.courses:
                     compact = []
-                    for c in student_courses.courses:
-                        code = c.get("code") or c.get("course_code") or "?"
-                        name = c.get("name") or c.get("course_name") or "Course"
-                        compact.append(f"{code}:{name}")
+                    for _key, items in student_courses.get_periods().items():
+                        for c in items:
+                            code = c.get("code") or c.get("course_code") or "?"
+                            name = c.get("name") or c.get("course_name") or "Course"
+                            compact.append(f"{code}:{name}")
                     lines.append("Courses: " + ", ".join(compact))
             except Exception:
                 pass

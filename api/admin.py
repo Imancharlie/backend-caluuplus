@@ -75,7 +75,7 @@ class StudentCourseAdmin(admin.ModelAdmin):
     readonly_fields = ('courses',)
     
     def courses_count(self, obj):
-        return len(obj.courses) if obj.courses else 0
+        return obj.period_count()
     courses_count.short_description = 'Number of Courses'
 
 

@@ -49,6 +49,170 @@ def notify_admin_users(title, body, notification_type='info', link=None):
         logger.error(f"Failed to notify admin users: {str(e)}")
         return 0
 
+
+def _all_student_courses(student_course):
+    """
+    Return a flat list of every normalized course dict across all periods.
+    Works for the canonical {"_v":.., "periods":{...}} shape as well as any
+    legacy shapes, never raises on malformed data.
+    """
+    if not student_course:
+        return []
+    periods = student_course.get_periods()
+    out = []
+    for key, items in periods.items():
+        parts = str(key).split('_')
+        year = parts[0] if parts else None
+        sem = parts[1] if len(parts) > 1 else None
+        for d in items:
+            cd = dict(d)
+            if cd.get('year') is None and year is not None:
+                try:
+                    cd['year'] = int(year)
+                except (TypeError, ValueError):
+                    pass
+            if cd.get('semester') is None and sem is not None:
+                try:
+                    cd['semester'] = int(sem)
+                except (TypeError, ValueError):
+                    pass
+            out.append(cd)
+    return out
+
+
+def _catalog_for_period(program, year, semester):
+    """Return (list of catalog Course for program+period, bool had_any_catalog)."""
+    qs = Course.objects.filter(program=program, semester=int(semester), year=int(year))
+    return list(qs), qs.exists()
+
+
+def _ensure_catalog_contribution(student, year, semester, courses, reward=True):
+    """
+    For a student's saved courses in a given (year, semester), auto-create any
+    course in the shared catalog (Course) that is missing for their program +
+    period, notify admins, and (when reward=True) credit COURSE_CONTRIBUTION
+    tokens to the student (once per newly created course, idempotent).
+
+    Returns a dict describing the outcome, or None if there is nothing to do.
+    """
+    if not student or not student.program_id:
+        return None
+    program = student.program
+    existing, has_catalog = _catalog_for_period(program, year, semester)
+    existing_by_code = {c.code.strip().upper().replace(' ', ''): c for c in existing}
+
+    new_courses = []
+    for d in (courses or []):
+        if not isinstance(d, dict):
+            continue
+        code = (d.get('code') or d.get('course_code') or '').strip()
+        if not code:
+            continue
+        norm = code.strip().upper().replace(' ', '')
+        if norm in existing_by_code:
+            continue
+        name = d.get('name') or d.get('course_name') or code
+        credits = d.get('credits')
+        if credits is None:
+            credits = d.get('credit_hour', 0)
+        try:
+            credits = int(credits or 0)
+        except (TypeError, ValueError):
+            credits = 0
+        t = (d.get('type') or '').strip().lower()
+        ctype = 'elective' if t in ('elective', 'optional') else 'core'
+        try:
+            course, created = Course.objects.get_or_create(
+                code=code,
+                program=program,
+                defaults={
+                    'name': name,
+                    'credits': credits,
+                    'type': ctype,
+                    'semester': int(semester),
+                    'year': int(year),
+                },
+            )
+        except Exception:
+            course, created = None, False
+        if course is not None:
+            existing_by_code[norm] = course
+            if created:
+                new_courses.append(course)
+
+    if not new_courses:
+        return None
+
+    # Notify admins about newly contributed courses.
+    try:
+        program_name = getattr(program, 'name', 'Unknown Program')
+        college_name = 'Unknown College'
+        university_name = 'Unknown University'
+        try:
+            if program.college_id:
+                college_name = program.college.name
+                if program.college.university_id:
+                    university_name = program.college.university.name
+        except Exception:
+            pass
+        student_name = getattr(student.user, 'display_name', 'Unknown Student')
+        lines = "\n".join(
+            f"- {c.code}: {c.name} (Semester {semester}, Year {year})" for c in new_courses
+        )
+        notify_admin_users(
+            title="New Courses Contributed to Catalog",
+            body=(
+                f"Student {student_name} contributed {len(new_courses)} new course(s) "
+                f"to the shared catalog for {program_name} ({college_name}, {university_name}), "
+                f"Semester {semester} Year {year}:\n\n{lines}"
+            ),
+            notification_type='info',
+            link=None,
+        )
+    except Exception:
+        pass
+
+    # Reward the contributor, once per course, idempotently.
+    rewarded = 0
+    if reward:
+        try:
+            from tokens.services import token_service as ts
+        except Exception:
+            ts = None
+        for course in new_courses:
+            try:
+                if ts is None:
+                    from tokens.services import reward as _reward
+                    _reward(
+                        student.user,
+                        'COURSE_CONTRIBUTION',
+                        reference_key=f"course_contribution:{student.user_id}:{course.id}",
+                        description=f"Contributed catalog course {course.code} ({course.name})",
+                        content_object=course,
+                        initiated_by='system',
+                    )
+                else:
+                    ts.reward(
+                        student.user,
+                        'COURSE_CONTRIBUTION',
+                        reference_key=f"course_contribution:{student.user_id}:{course.id}",
+                        description=f"Contributed catalog course {course.code} ({course.name})",
+                        content_object=course,
+                        initiated_by='system',
+                    )
+                rewarded += 1
+            except Exception:
+                # Duplicate reward or wallet issue should not block the save.
+                continue
+
+    return {
+        'contributed': len(new_courses),
+        'rewarded': rewarded,
+        'courses': [{'code': c.code, 'name': c.name, 'id': str(c.id)} for c in new_courses],
+        'catalog_missing_for_period': (not has_catalog),
+    }
+
+
 def get_course_info_from_slot(slot):
     """Helper function to get course information from a timetable slot, prioritizing StudentCourse data"""
     course_name = slot.course_name
@@ -56,8 +220,8 @@ def get_course_info_from_slot(slot):
     
     # If we have a student_course reference, try to get the most up-to-date info
     if slot.student_course and slot.student_course.courses:
-        # Look for the course in the student's courses JSON
-        for course_data in slot.student_course.courses:
+        # Look for the course in the student's courses (works for periods store)
+        for course_data in _all_student_courses(slot.student_course):
             # Match by course_code or course_name
             if (course_data.get('code') == slot.course_code or 
                 course_data.get('name') == slot.course_name or
@@ -1116,277 +1280,147 @@ def student_profile_options(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def get_student_courses_by_semester(request, semester, year):
-    """Get courses for a specific semester and year for the authenticated student"""
+    """Get courses for the authenticated student for a specific (year, semester)."""
     try:
         student = Student.objects.get(user=request.user)
     except Student.DoesNotExist:
         return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    try:
-        student_course = StudentCourse.objects.get(student=student)
-        courses = student_course.courses or []
-        
-        # Filter courses by semester and year
-        filtered_courses = [
-            course for course in courses 
-            if course.get('semester') == semester and course.get('year') == year
-        ]
-        
-        return Response({
-            'semester': semester,
-            'year': year,
-            'courses': filtered_courses,
-            'total_courses': len(filtered_courses)
-        }, status=status.HTTP_200_OK)
-        
-    except StudentCourse.DoesNotExist:
-        return Response({
-            'semester': semester,
-            'year': year,
-            'courses': [],
-            'total_courses': 0,
-            'message': 'No courses found for this student'
-        }, status=status.HTTP_200_OK)
+
+    student_course = StudentCourse.objects.filter(student=student).first()
+    courses = student_course.get_period(year, semester) if student_course else []
+
+    # Report catalog availability so the frontend knows whether to offer
+    # "configure from catalog" vs "contribute your own".
+    catalog_courses, has_catalog = [], False
+    if student.program_id:
+        catalog_courses, has_catalog = _catalog_for_period(student.program, year, semester)
+
+    return Response({
+        'semester': semester,
+        'year': year,
+        'courses': courses,
+        'total_courses': len(courses),
+        'catalog': {
+            'has_courses': has_catalog,
+            'total': len(catalog_courses),
+            'courses': [
+                {'id': str(c.id), 'code': c.code, 'name': c.name,
+                 'credits': c.credits, 'type': c.type} for c in catalog_courses
+            ],
+        },
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def get_student_courses_filtered(request):
-    """Get courses for the authenticated student with optional semester/year filtering"""
+    """Get courses for the authenticated student with optional semester/year/type filtering."""
     try:
         student = Student.objects.get(user=request.user)
     except Student.DoesNotExist:
         return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    try:
-        student_course = StudentCourse.objects.get(student=student)
-        courses = student_course.courses or []
-        
-        # Get filter parameters from query string
-        semester = request.query_params.get('semester')
-        year = request.query_params.get('year')
-        course_type = request.query_params.get('type')  # 'core' or 'elective'
-        
-        # Apply filters
-        filtered_courses = courses
-        
-        if semester is not None:
+
+    student_course = StudentCourse.objects.filter(student=student).first()
+    courses = _all_student_courses(student_course)
+
+    semester = request.query_params.get('semester')
+    year = request.query_params.get('year')
+    course_type = request.query_params.get('type', request.query_params.get('course_type'))
+
+    filtered_courses = courses
+    if semester is not None:
+        try:
             semester = int(semester)
-            filtered_courses = [
-                course for course in filtered_courses 
-                if course.get('semester') == semester
-            ]
-        
-        if year is not None:
+            filtered_courses = [c for c in filtered_courses if c.get('semester') == semester]
+        except (TypeError, ValueError):
+            pass
+    if year is not None:
+        try:
             year = int(year)
-            filtered_courses = [
-                course for course in filtered_courses 
-                if course.get('year') == year
-            ]
-        
-        if course_type:
-            filtered_courses = [
-                course for course in filtered_courses 
-                if course.get('type') == course_type
-            ]
-        
-        return Response({
-            'filters': {
-                'semester': semester,
-                'year': year,
-                'type': course_type
-            },
-            'courses': filtered_courses,
-            'total_courses': len(filtered_courses)
-        }, status=status.HTTP_200_OK)
-        
-    except StudentCourse.DoesNotExist:
-        return Response({
-            'filters': {
-                'semester': semester,
-                'year': year,
-                'type': course_type
-            },
-            'courses': [],
-            'total_courses': 0,
-            'message': 'No courses found for this student'
-        }, status=status.HTTP_200_OK)
+            filtered_courses = [c for c in filtered_courses if c.get('year') == year]
+        except (TypeError, ValueError):
+            pass
+    if course_type:
+        filtered_courses = [c for c in filtered_courses if c.get('type') == course_type]
+
+    return Response({
+        'filters': {'semester': semester, 'year': year, 'type': course_type},
+        'courses': filtered_courses,
+        'total_courses': len(filtered_courses),
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def save_courses_batch(request):
-    """Save multiple courses for the authenticated student in the JSON field and create them in Course model if they don't exist"""
+    """
+    Save a batch of courses for the authenticated student.
+
+    Courses are grouped by (year, semester) and written into their own
+    period within the canonical periods store, so saving one period never
+    overwrites or loses any other period. Courses contributing new entries to
+    the shared catalog are auto-created, admins are notified, and the student
+    is rewarded tokens.
+    """
     try:
         courses_data = request.data.get('courses', [])
-        
+
         if not courses_data:
             return Response(
-                {'error': 'No courses provided'}, 
+                {'error': 'No courses provided'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # Get or create student profile
-        try:
-            student = Student.objects.get(user=request.user)
-        except Student.DoesNotExist:
-            return Response(
-                {'error': 'Student profile not found'}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Get or create StudentCourse record
-        student_course, created = StudentCourse.objects.get_or_create(student=student)
-        
-        # Import logger for error handling
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        # Format courses data for storage in JSON field and create Course records if needed
-        formatted_courses = []
-        new_courses_created = []
-        program = student.program
-        
-        # Group courses by (semester, year) combination to check count once per group
-        courses_by_sem_year = {}
-        courses_without_sem_year = []
+
+        student = Student.objects.get(user=request.user)
+        student_course, _ = StudentCourse.objects.get_or_create(student=student)
+
+        # Group by (year, semester); courses without those go to the student's
+        # current year/semester so they are never dropped.
+        grouped = {}
         for course_data in courses_data:
-            semester = course_data.get('semester')
-            year = course_data.get('year')
-            if semester and year:
-                key = (semester, year)
-                if key not in courses_by_sem_year:
-                    courses_by_sem_year[key] = []
-                courses_by_sem_year[key].append(course_data)
-            else:
-                courses_without_sem_year.append(course_data)
-        
-        # Process courses grouped by semester/year
-        for (semester, year), group_courses in courses_by_sem_year.items():
-            # Check count ONCE for this semester/year group
-            existing_courses_count = Course.objects.filter(
-                program=program,
-                semester=semester,
-                year=year
-            ).count()
-            # Only populate to database if less than 4 courses exist
-            should_populate_to_db = existing_courses_count < 4
-            
-            # Process all courses in this group
-            for course_data in group_courses:
-                course_code = course_data.get('course_code')
-                course_name = course_data.get('course_name')
-                credits = course_data.get('credit_hour', 0)
-                course_type = 'elective' if course_data.get('is_elective') else 'core'
-                course_id = course_data.get('course_id')
-                
-                # Check if course exists in Course model for this program
-                course_obj = None
-                if course_code and should_populate_to_db:
-                    # Use update_or_create to avoid duplicates - match by code, program, semester, year
-                    if course_name and credits and semester and year:
-                        try:
-                            course_obj, created = Course.objects.update_or_create(
-                                code=course_code,
-                                program=program,
-                                semester=semester,
-                                year=year,
-                                defaults={
-                                    'name': course_name,
-                                    'credits': credits,
-                                    'type': course_type,
-                                }
-                            )
-                            course_id = str(course_obj.id)
-                            if created:
-                                new_courses_created.append({
-                                    'code': course_code,
-                                    'name': course_name,
-                                    'semester': semester,
-                                    'year': year
-                                })
-                        except Exception as create_error:
-                            logger.error(f"Failed to create/update course in Course table: {str(create_error)}")
-                    else:
-                        # Try to find existing course by code
-                        try:
-                            course_obj = Course.objects.get(code=course_code, program=program)
-                            course_id = str(course_obj.id)
-                        except Course.DoesNotExist:
-                            pass
-            
-                formatted_course = {
-                    'id': course_id,
-                    'code': course_code,
-                    'name': course_name,
-                    'credits': credits,
-                    'type': course_type,
-                    'semester': semester,
-                    'year': year,
-                    'added_at': None  # Will be set when saved
-                }
-                formatted_courses.append(formatted_course)
-        
-        # Process courses without semester/year (shouldn't populate to DB)
-        for course_data in courses_without_sem_year:
-            course_code = course_data.get('course_code')
-            course_name = course_data.get('course_name')
-            credits = course_data.get('credit_hour', 0)
-            course_type = 'elective' if course_data.get('is_elective') else 'core'
-            semester = course_data.get('semester')
-            year = course_data.get('year')
-            course_id = course_data.get('course_id')
-            
-            formatted_course = {
-                'id': course_id,
-                'code': course_code,
-                'name': course_name,
-                'credits': credits,
-                'type': course_type,
-                'semester': semester,
-                'year': year,
-                'added_at': None  # Will be set when saved
-            }
-            formatted_courses.append(formatted_course)
-        
-        # Store all courses in the JSON field
-        student_course.courses = formatted_courses
+            if not isinstance(course_data, dict):
+                continue
+            semester = course_data.get('semester') or course_data.get('course_semester')
+            year = course_data.get('year') or course_data.get('course_year')
+            if semester is None or year is None:
+                semester = student.semester or 1
+                year = student.year or 1
+            try:
+                key = (int(year), int(semester))
+            except (TypeError, ValueError):
+                key = (int(student.year or 1), int(student.semester or 1))
+            grouped.setdefault(key, []).append(course_data)
+
+        total_saved = 0
+        contribution = None
+        for (year, semester), period_courses in grouped.items():
+            cleaned = student_course.set_period(year, semester, period_courses, save=False)
+            total_saved += len(cleaned)
+            # Auto-create missing catalog entries for this period (contribution).
+            result = _ensure_catalog_contribution(student, year, semester, cleaned, reward=True)
+            if result and contribution is None:
+                contribution = result
+
         student_course.save()
-        
-        # Notify admins if new courses were created
-        if new_courses_created:
-            program_name = program.name
-            college_name = program.college.name
-            university_name = program.college.university.name
-            student_name = student.user.display_name
-            
-            title = f"New Courses Added to Database"
-            body = f"Student {student_name} has added {len(new_courses_created)} new course(s) for {program_name} ({college_name}, {university_name}):\n\n"
-            body += "\n".join([f"- {c['code']}: {c['name']} (Semester {c['semester']}, Year {c['year']})" for c in new_courses_created])
-            body += f"\n\nThese courses are now available for other students in the same program, semester, and academic year."
-            
-            notify_admin_users(
-                title=title,
-                body=body,
-                notification_type='info',
-                link=None
-            )
-        
+
         response_data = {
-            'message': f'Successfully saved {len(formatted_courses)} courses',
-            'courses': formatted_courses
+            'message': f'Successfully saved {total_saved} courses',
+            'total_courses': total_saved,
+            'courses': _all_student_courses(student_course),
         }
-        if new_courses_created:
-            response_data['new_courses_created'] = len(new_courses_created)
-            response_data['message'] += f' ({len(new_courses_created)} new courses added to database)'
-        
+        if contribution:
+            response_data['contributed_courses'] = contribution['contributed']
+            response_data['rewarded_tokens'] = contribution['rewarded']
+            response_data['message'] += (
+                f" ({contribution['rewarded']} new catalogs contributed, "
+                f"{contribution['rewarded']} tokens rewarded)"
+            )
         return Response(response_data, status=status.HTTP_201_CREATED)
-        
+
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response(
-            {'error': str(e)}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['DELETE'])
@@ -1412,650 +1446,304 @@ def remove_course(request, course_id):
 @api_view(['GET', 'POST', 'PUT'])
 @permission_classes([permissions.IsAuthenticated])
 def student_courses(request):
+    """
+    Manage the authenticated student's courses (canonical periods store).
+
+    GET  -> returns the full store: {"_v": 2, "periods": {"1_1": [ ... ], ...}}.
+    POST -> adds a single course into its (year, semester) period.
+    PUT  -> bulk save; accepts either {"periods": {"year_sem": [...]}} to replace
+            selected periods (preserving all others), or a flat {"courses": [...]}
+            grouped by each course's own year/semester so nothing is lost.
+    """
     try:
         student = Student.objects.get(user=request.user)
     except Student.DoesNotExist:
         return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Get or create StudentCourse record
-    student_course, created = StudentCourse.objects.get_or_create(student=student)
-    
+
+    student_course, _ = StudentCourse.objects.get_or_create(student=student)
+
     if request.method == 'GET':
-        serializer = StudentCourseSerializer(student_course)
-        return Response(serializer.data)
-    
-    elif request.method == 'POST':
-        # Add single course
-        import uuid
-        import logging
-        logger = logging.getLogger(__name__)
-        
+        store = student_course.ensure_periods()
+        store['total_courses'] = student_course.period_count()
+        return Response(store, status=status.HTTP_200_OK)
+
+    if request.method == 'POST':
         try:
-            logger.info("=" * 80)
-            logger.info("📝 POST /api/students/courses/ - Starting course addition")
-            logger.info(f"Request data: {request.data}")
-            logger.info(f"User: {request.user.email if request.user else 'None'}")
-            
-            serializer = CourseAddSerializer(data=request.data)
-            if not serializer.is_valid():
-                logger.error(f"❌ Serializer validation failed: {serializer.errors}")
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-            course_id = serializer.validated_data.get('course_id')
-            course_code = serializer.validated_data.get('code')
-            course_name = serializer.validated_data.get('name')
-            credits = serializer.validated_data.get('credits')
-            course_type = serializer.validated_data.get('type', 'core')
-            semester = serializer.validated_data.get('semester')
-            year = serializer.validated_data.get('year')
-            
-            logger.info(f"📋 Parsed course data - ID: {course_id}, Code: {course_code}, Name: {course_name}")
-            logger.info(f"   Credits: {credits}, Type: {course_type}, Semester: {semester}, Year: {year}")
-            
-            # Check if student has a program
-            if not hasattr(student, 'program') or student.program is None:
-                logger.error("❌ Student profile missing program")
-                return Response({
-                    'error': 'Student profile is incomplete. Please complete your profile with program information first.'
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            program = student.program
-            logger.info(f"✅ Student has program: {program.name if program else 'None'}")
-            
-            course_obj = None
-            new_course_created = False
-            
-            # Try to get course by ID if provided
-            if course_id:
-                try:
-                    course_obj = Course.objects.get(id=course_id, program=program)
-                except Course.DoesNotExist:
-                    # Course doesn't exist in Course table, will try to create or use provided details
-                    pass
-            
-            # If course not found by ID, try to get course details from student's existing courses
-            if not course_obj and course_id:
-                # Check if course exists in student's courses JSON field
-                existing_courses = student_course.courses or []
-                for existing_course in existing_courses:
-                    if str(existing_course.get('id')) == str(course_id):
-                        # Found course in student's courses, use its data if not already provided
-                        if not course_code:
-                            course_code = existing_course.get('code')
-                        if not course_name:
-                            course_name = existing_course.get('name')
-                        if credits is None:
-                            credits = existing_course.get('credits')
-                        if not course_type or course_type == 'core':
-                            course_type = existing_course.get('type', 'core')
-                        if semester is None:
-                            semester = existing_course.get('semester')
-                        if year is None:
-                            year = existing_course.get('year')
-                        break
-            
-            # Try to populate Course table if needed (non-blocking - failures won't stop the process)
-            if not course_obj and course_code:
-                # Check if we should populate courses to database
-                should_populate_to_db = False
-                try:
-                    if semester is not None and year is not None:
-                        existing_courses_count = Course.objects.filter(
-                            program=program,
-                            semester=semester,
-                            year=year
-                        ).count()
-                        # Only populate to database if less than 4 courses exist
-                        should_populate_to_db = existing_courses_count < 4
-                    
-                    # If we have course details and should populate, try to find or create course
-                    if should_populate_to_db:
-                        # Try to find by code
-                        try:
-                            course_obj = Course.objects.get(code=course_code, program=program)
-                            course_id = str(course_obj.id)
-                        except Course.DoesNotExist:
-                            # Create new course if we have all required details
-                            if course_name and credits is not None and semester is not None and year is not None:
-                                try:
-                                    course_obj = Course.objects.create(
-                                        code=course_code,
-                                        name=course_name,
-                                        credits=credits,
-                                        type=course_type,
-                                        semester=semester,
-                                        year=year,
-                                        program=program
-                                    )
-                                    course_id = str(course_obj.id)
-                                    new_course_created = True
-                                    
-                                    # Notify admins about new course creation
-                                    try:
-                                        # Safely get related field values
-                                        program_name = getattr(program, 'name', 'Unknown Program') if program else 'Unknown Program'
-                                        college_name = 'Unknown College'
-                                        university_name = 'Unknown University'
-                                        
-                                        try:
-                                            if program and hasattr(program, 'college') and program.college:
-                                                college_name = getattr(program.college, 'name', 'Unknown College')
-                                                if hasattr(program.college, 'university') and program.college.university:
-                                                    university_name = getattr(program.college.university, 'name', 'Unknown University')
-                                        except Exception:
-                                            pass  # Use defaults if any related field access fails
-                                        
-                                        student_name = getattr(student.user, 'display_name', 'Unknown Student') if student and student.user else 'Unknown Student'
-                                        
-                                        title = f"New Course Added to Database"
-                                        body = f"Student {student_name} has added a new course for {program_name} ({college_name}, {university_name}):\n\n"
-                                        body += f"- {course_code}: {course_name} (Semester {semester}, Year {year})\n\n"
-                                        body += f"This course is now available for other students in the same program, semester, and academic year."
-                                        
-                                        notify_admin_users(
-                                            title=title,
-                                            body=body,
-                                            notification_type='info',
-                                            link=None
-                                        )
-                                    except Exception as notify_error:
-                                        # Log notification error but don't fail
-                                        logger.warning(f"Failed to notify admins about new course: {str(notify_error)}")
-                                except Exception as create_error:
-                                    # Log course creation error but continue - we'll still add to student_courses
-                                    logger.warning(f"Failed to create course in Course table: {str(create_error)}. Continuing to add to student courses.")
-                            else:
-                                # Missing required fields - log but continue
-                                logger.debug(f"Missing fields to create course: code={course_code}, name={course_name}, credits={credits}, semester={semester}, year={year}")
-                        except Exception as lookup_error:
-                            # Log lookup error but continue
-                            logger.warning(f"Error looking up course by code: {str(lookup_error)}")
-                except Exception as populate_error:
-                    # Log any errors during populate check but continue
-                    logger.warning(f"Error checking if should populate courses: {str(populate_error)}")
-            
-            # Prepare course data for student_courses JSON field
-            # Use course_obj if available, otherwise use provided details
-            if course_obj:
-                # Course exists in Course table
-                try:
-                    course_data = {
-                        'id': str(course_obj.id),
-                        'code': course_obj.code or '',
-                        'name': course_obj.name or '',
-                        'credits': course_obj.credits if course_obj.credits is not None else 0,
-                        'type': course_obj.type or 'core',
-                        'semester': course_obj.semester if course_obj.semester is not None else (semester if semester is not None else (student.semester if student.semester is not None else 1)),
-                        'year': course_obj.year if course_obj.year is not None else (year if year is not None else (student.year if student.year is not None else 1)),
-                        'added_at': None
-                    }
-                except Exception as course_data_error:
-                    logger.error(f"Error preparing course data from course_obj: {str(course_data_error)}")
-                    # Fall back to using provided details
-                    course_obj = None
-            
-            if not course_obj:
-                # Course doesn't exist in Course table, use provided details or generate ID
-                if not course_id:
-                    # Generate a UUID if no course_id provided
-                    course_id = str(uuid.uuid4())
-                
-                # Validate we have minimum required fields
-                if not course_code or not course_name:
-                    return Response({
-                        'error': 'Missing required course details. Please provide at least code and name.'
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                
-                # Get default semester and year from student if not provided
-                default_semester = semester if semester is not None else (student.semester if student.semester is not None else 1)
-                default_year = year if year is not None else (student.year if student.year is not None else 1)
-                
-                # Use provided values or defaults
-                course_data = {
-                    'id': course_id,
-                    'code': str(course_code).strip(),
-                    'name': str(course_name).strip(),
-                    'credits': credits if credits is not None else 0,
-                    'type': course_type or 'core',
-                    'semester': default_semester,
-                    'year': default_year,
-                    'added_at': None
-                }
-            
-            # Validate course_data before adding
-            if not course_data.get('code') or not course_data.get('name'):
-                return Response({
-                    'error': 'Invalid course data: code and name are required.'
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Add course to JSON field (this is the main operation - must succeed)
+            semester = int(request.data.get('semester') or student.semester or 1)
+            year = int(request.data.get('year') or student.year or 1)
+        except (TypeError, ValueError):
+            semester = int(student.semester or 1)
+            year = int(student.year or 1)
+        cd, added = student_course.add_course_to_period(year, semester, request.data)
+        if not cd:
+            return Response({'error': 'Invalid course data: code/name required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        _ensure_catalog_contribution(student, year, semester, [cd], reward=True)
+        if not added:
+            return Response({'error': 'Course already exists in this period'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'message': 'Course added successfully',
+            'course': cd,
+            'period': StudentCourse.period_key(year, semester),
+        }, status=status.HTTP_201_CREATED)
+
+    # PUT: bulk save preserving other periods.
+    payload = request.data
+    periods_payload = payload.get('periods') if isinstance(payload, dict) else None
+    flat_courses = payload.get('courses') if isinstance(payload, dict) else None
+
+    total_saved = 0
+    contributed = 0
+    rewarded = 0
+    processed_periods = []
+
+    if isinstance(periods_payload, dict):
+        for key, items in periods_payload.items():
+            parts = str(key).split('_')
             try:
-                logger.info(f"💾 Attempting to add course to student_courses: {course_data}")
-                
-                if student_course.add_course(course_data):
-                    logger.info("✅ Course added successfully to student_courses")
-                    response_data = {
-                        'message': 'Course added successfully',
-                        'course': course_data
-                    }
-                    if new_course_created:
-                        response_data['message'] = 'Course created and added successfully'
-                        response_data['course_created'] = True
-                    logger.info("=" * 80)
-                    return Response(response_data, status=status.HTTP_201_CREATED)
-                else:
-                    logger.warning("⚠️ Course already exists in student_courses")
-                    return Response({'error': 'Course already added'}, status=status.HTTP_400_BAD_REQUEST)
-            except Exception as add_error:
-                # This is the only critical error - if we can't add to student_courses, fail
-                import traceback
-                error_traceback = traceback.format_exc()
-                logger.error("=" * 80)
-                logger.error("❌ FAILED TO ADD COURSE TO STUDENT_COURSES")
-                logger.error("=" * 80)
-                logger.error(f"Error: {str(add_error)}")
-                logger.error(f"Error Type: {type(add_error).__name__}")
-                logger.error(f"\nFull Traceback:\n{error_traceback}")
-                logger.error("=" * 80)
-                return Response({
-                    'error': f'Failed to add course: {str(add_error)}'
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
-        except Exception as e:
-            # Catch any unexpected errors
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error("=" * 80)
-            logger.error("❌ UNEXPECTED ERROR IN STUDENT_COURSES POST")
-            logger.error("=" * 80)
-            logger.error(f"Error: {str(e)}")
-            logger.error(f"Error Type: {type(e).__name__}")
-            logger.error(f"\nFull Traceback:\n{error_traceback}")
-            logger.error("=" * 80)
-            return Response({
-                'error': f'An unexpected error occurred: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-    elif request.method == 'PUT':
-        # Update all courses (bulk update)
-        import uuid
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info("=" * 80)
-        logger.info("📝 PUT /api/students/courses/ - Starting bulk course update")
-        logger.info(f"Request data: {request.data}")
-        
+                p_year = int(parts[0])
+                p_sem = int(parts[1]) if len(parts) > 1 else 1
+            except (TypeError, ValueError, IndexError):
+                continue
+            cleaned = student_course.set_period(p_year, p_sem, items or [], save=False)
+            total_saved += len(cleaned)
+            processed_periods.append((p_year, p_sem))
+            res = _ensure_catalog_contribution(student, p_year, p_sem, cleaned, reward=True)
+            if res:
+                contributed += res['contributed']
+                rewarded += res['rewarded']
+    elif isinstance(flat_courses, list):
+        grouped = {}
+        for c in flat_courses:
+            if not isinstance(c, dict):
+                continue
+            try:
+                y = int(c.get('year') or student.year or 1)
+                s = int(c.get('semester') or student.semester or 1)
+            except (TypeError, ValueError):
+                y = int(student.year or 1)
+                s = int(student.semester or 1)
+            grouped.setdefault((y, s), []).append(c)
+        for (p_year, p_sem), items in grouped.items():
+            cleaned = student_course.set_period(p_year, p_sem, items, save=False)
+            total_saved += len(cleaned)
+            processed_periods.append((p_year, p_sem))
+            res = _ensure_catalog_contribution(student, p_year, p_sem, cleaned, reward=True)
+            if res:
+                contributed += res['contributed']
+                rewarded += res['rewarded']
+    else:
+        return Response({'error': 'Invalid payload: expected {"periods": {...}} or {"courses": [...]}'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    student_course.save()
+    message = f'Successfully saved {total_saved} courses across {len(processed_periods)} period(s)'
+    if contributed:
+        message += f' ({contributed} catalog(s) contributed, {rewarded} tokens rewarded)'
+    response = {
+        'message': message,
+        'total_saved': total_saved,
+        'periods': student_course.get_periods(),
+        'contributed_courses': contributed,
+        'rewarded_tokens': rewarded,
+    }
+    return Response(response, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def get_student_course_period(request, year, semester):
+    """Get a single (year, semester) period's saved courses plus catalog availability."""
+    try:
+        student = Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    student_course = StudentCourse.objects.filter(student=student).first()
+    saved = student_course.get_period(year, semester) if student_course else []
+
+    catalog_courses, has_catalog = [], False
+    if student.program_id:
+        catalog_courses, has_catalog = _catalog_for_period(student.program, year, semester)
+
+    next_year, next_sem = (int(year), int(semester))
+    if int(semester) == 1:
+        nxt = (int(year), 2)
+    else:
+        nxt = (int(year) + 1, 1)
+
+    return Response({
+        'year': int(year),
+        'semester': int(semester),
+        'period': StudentCourse.period_key(year, semester),
+        'courses': saved,
+        'total_courses': len(saved),
+        'catalog_missing': (not has_catalog),
+        'catalog': {
+            'has_courses': has_catalog,
+            'total': len(catalog_courses),
+            'courses': [
+                {'id': str(c.id), 'code': c.code, 'name': c.name,
+                 'credits': c.credits, 'type': c.type} for c in catalog_courses
+            ],
+        },
+        'next_period': f'{nxt[0]}_{nxt[1]}',
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([permissions.IsAuthenticated])
+def save_student_course_period(request, year, semester):
+    """Replace the courses for one (year, semester) period only, preserving all others.
+
+    Body: {"courses": [ {...course dicts...} ]}
+    Missing catalog entries are auto-created, admins notified, and the student
+    rewarded tokens (idempotently).
+    """
+    try:
+        student = Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    courses = request.data.get('courses', [])
+    if not isinstance(courses, list):
+        return Response({'error': 'Expected {"courses": [...]}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    student_course, _ = StudentCourse.objects.get_or_create(student=student)
+    cleaned = student_course.set_period(int(year), int(semester), courses)
+
+    contribution = _ensure_catalog_contribution(student, int(year), int(semester), cleaned, reward=True)
+
+    message = f'Successfully saved {len(cleaned)} courses for semester {semester} year {year}'
+    response_data = {
+        'message': message,
+        'year': int(year),
+        'semester': int(semester),
+        'courses': cleaned,
+        'total_courses': len(cleaned),
+    }
+    if contribution:
+        response_data['contributed_courses'] = contribution['contributed']
+        response_data['rewarded_tokens'] = contribution['rewarded']
+        response_data['message'] += (
+            f" ({contribution['rewarded']} catalog(s) contributed, "
+            f"{contribution['rewarded']} tokens rewarded)"
+        )
+    return Response(response_data, status=status.HTTP_200_OK)
+
+
+@api_view(['DELETE'])
+@permission_classes([permissions.IsAuthenticated])
+def remove_student_course_from_period(request, year, semester, course_id):
+    """Remove a single course from a specific (year, semester) period."""
+    try:
+        student = Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    student_course, _ = StudentCourse.objects.get_or_create(student=student)
+    if student_course.remove_course_from_period(int(year), int(semester), course_id):
+        return Response({'message': 'Course removed successfully'}, status=status.HTTP_200_OK)
+    return Response({'error': 'Course not found in this period'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['DELETE'])
+@permission_classes([permissions.IsAuthenticated])
+def remove_student_course_period(request, year, semester):
+    """Remove an entire (year, semester) period."""
+    try:
+        student = Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    student_course, _ = StudentCourse.objects.get_or_create(student=student)
+    if student_course.remove_period(int(year), int(semester)):
+        return Response({'message': f'Removed all courses for semester {semester} year {year}'},
+                        status=status.HTTP_200_OK)
+    return Response({'error': 'Period not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def advance_student_period(request):
+    """
+    Advance the student to the next academic period (semester 1 -> 2 -> next year 1).
+
+    Body (optional): {"year": int, "semester": int} = the CURRENT period to advance
+    from. If omitted, the student's profile year/semester (or the latest saved
+    period) is used.
+
+    The new period is initialized with the program catalog's core + elective
+    courses for that (year, semester) so the student can configure/save their
+    own. The student profile's year/semester is also bumped.
+    """
+    try:
+        student = Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    student_course, _ = StudentCourse.objects.get_or_create(student=student)
+
+    req_year = request.data.get('year')
+    req_sem = request.data.get('semester')
+    if req_year is not None and req_sem is not None:
         try:
-            serializer = StudentCourseUpdateSerializer(data=request.data)
-            if not serializer.is_valid():
-                logger.error(f"❌ Serializer validation failed: {serializer.errors}")
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-            courses_data = serializer.validated_data['courses']
-            logger.info(f"📋 Received {len(courses_data)} courses after serializer validation")
-            
-            # Filter out empty or invalid course objects
-            valid_courses = []
-            for idx, course in enumerate(courses_data):
-                # Check if course has at least code or name (support both naming conventions)
-                has_code = course.get('code') or course.get('course_code')
-                has_name = course.get('name') or course.get('course_name')
-                
-                logger.debug(f"  Course {idx + 1} - code: {course.get('code')}, course_code: {course.get('course_code')}, name: {course.get('name')}, course_name: {course.get('course_name')}")
-                
-                if has_code or has_name:
-                    valid_courses.append(course)
-                else:
-                    logger.warning(f"⚠️ Skipping empty/invalid course object: {dict(course)}")
-            
-            if not valid_courses:
-                logger.error("❌ No valid courses provided after filtering")
-                return Response({
-                    'error': 'No valid courses provided. Each course must have at least a code or name.'
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            logger.info(f"📋 Processing {len(valid_courses)} valid courses (filtered from {len(courses_data)})")
-            
-            # Convert to the format expected by the model and create Course records if needed
-            formatted_courses = []
-            new_courses_created = []
-            program = student.program
-            
-            # Group courses by (semester, year) combination to check count once per group
-            courses_by_sem_year = {}
-            courses_without_sem_year = []
-            for course in valid_courses:
-                semester = course.get('semester')
-                year = course.get('year')
-                if semester and year:
-                    key = (semester, year)
-                    if key not in courses_by_sem_year:
-                        courses_by_sem_year[key] = []
-                    courses_by_sem_year[key].append(course)
-                else:
-                    courses_without_sem_year.append(course)
-            
-            # Process courses grouped by semester/year
-            for (semester, year), group_courses in courses_by_sem_year.items():
-                # Check count ONCE for this semester/year group
-                existing_courses_count = Course.objects.filter(
-                    program=program,
-                    semester=semester,
-                    year=year
-                ).count()
-                # Only populate to database if less than 4 courses exist
-                should_populate_to_db = existing_courses_count < 4
-                logger.info(f"  📊 Group ({semester}, {year}) - Existing courses: {existing_courses_count}, Should populate: {should_populate_to_db}")
-                
-                # Process all courses in this group
-                for idx, course in enumerate(group_courses):
-                    # Support both naming conventions (frontend: course_code/course_name/credit_hour/is_elective/course_id)
-                    # and backend (code/name/credits/type/id)
-                    course_id = course.get('id') or course.get('course_id')
-                    course_code = course.get('code') or course.get('course_code')
-                    course_name = course.get('name') or course.get('course_name')
-                    credits = course.get('credits') if course.get('credits') is not None else course.get('credit_hour', 0)
-                    
-                    # Handle type: is_elective (boolean) -> type (string)
-                    course_type = course.get('type', 'core')
-                    if 'is_elective' in course and course['is_elective'] is not None:
-                        course_type = 'elective' if course['is_elective'] else 'core'
-                    
-                    logger.info(f"  Processing course {idx + 1}/{len(group_courses)} in group ({semester}, {year}): {course_code or 'N/A'}")
-                    
-                    # Check if course exists in Course model for this program
-                    course_obj = None
-                    if course_code and should_populate_to_db:
-                        logger.info(f"  🔍 Attempting to find/create course '{course_code}' in Course table")
-                        # Try to find by ID first if provided (only if it's a valid UUID)
-                        if course_id:
-                            # Validate if course_id is a valid UUID before querying
-                            is_valid_uuid = False
-                            try:
-                                import uuid
-                                uuid.UUID(str(course_id))
-                                is_valid_uuid = True
-                            except (ValueError, AttributeError, TypeError):
-                                # course_id is not a valid UUID (likely a temporary ID from frontend)
-                                is_valid_uuid = False
-                                logger.debug(f"Course ID '{course_id}' is not a valid UUID, skipping Course table lookup")
-                            
-                            if is_valid_uuid:
-                                try:
-                                    course_obj = Course.objects.get(id=course_id, program=program)
-                                    logger.info(f"✅ Found course in Course table by ID: {course_id}")
-                                except Course.DoesNotExist:
-                                    logger.debug(f"Course with ID {course_id} not found in Course table")
-                                    pass
-                                except Exception as e:
-                                    logger.warning(f"Error looking up course by ID {course_id}: {str(e)}")
-                                    pass
-                        
-                        # If not found by ID, try by code using update_or_create to handle duplicates
-                        if not course_obj:
-                            logger.info(f"  🔍 Looking up/creating course by code '{course_code}' in Course table")
-                            if course_name and credits and semester and year:
-                                try:
-                                    # Use update_or_create to avoid duplicates - match by code, program, semester, year
-                                    course_obj, created = Course.objects.update_or_create(
-                                        code=course_code,
-                                        program=program,
-                                        semester=semester,
-                                        year=year,
-                                        defaults={
-                                            'name': course_name,
-                                            'credits': credits,
-                                            'type': course_type,
-                                        }
-                                    )
-                                    course_id = str(course_obj.id)
-                                    if created:
-                                        logger.info(f"  ✅ Created new course in Course table: {course_code} (ID: {course_id})")
-                                        new_courses_created.append({
-                                            'code': course_code,
-                                            'name': course_name,
-                                            'semester': semester,
-                                            'year': year
-                                        })
-                                    else:
-                                        logger.info(f"  🔄 Updated existing course in Course table: {course_code} (ID: {course_id})")
-                                except Exception as create_error:
-                                    logger.error(f"  ❌ Failed to create/update course in Course table: {str(create_error)}")
-                            else:
-                                missing = []
-                                if not course_name:
-                                    missing.append('name')
-                                if credits is None:
-                                    missing.append('credits')
-                                if not semester:
-                                    missing.append('semester')
-                                if not year:
-                                    missing.append('year')
-                                logger.warning(f"  ⚠️ Cannot create course - missing fields: {', '.join(missing)}")
-                    elif not course_code:
-                        logger.info(f"  ⚠️ No course_code provided, skipping Course table operations")
-                    elif not should_populate_to_db:
-                        logger.info(f"  ⚠️ Skipping Course table - already have {existing_courses_count} courses (limit: 4)")
-                    
-                    # Use course_obj data if available, otherwise use provided values
-                    if course_obj:
-                        # Course exists in Course table, use its data
-                        final_course_id = str(course_obj.id)
-                        final_course_code = course_obj.code
-                        final_course_name = course_obj.name
-                        final_credits = course_obj.credits
-                        final_course_type = course_obj.type
-                        final_semester = course_obj.semester
-                        final_year = course_obj.year
-                        logger.info(f"  ✅ Using Course table data for: {final_course_code}")
-                    else:
-                        # Use provided values or defaults
-                        final_course_id = course_id or str(uuid.uuid4())
-                        final_course_code = course_code or ''
-                        final_course_name = course_name or ''
-                        final_credits = credits if credits is not None else 0
-                        final_course_type = course_type or 'core'
-                        final_semester = semester
-                        final_year = year
-                        logger.info(f"  📝 Using provided data for: {final_course_code or final_course_name or 'N/A'}")
-                    
-                    formatted_course = {
-                        'id': final_course_id,
-                        'code': final_course_code,
-                        'name': final_course_name,
-                        'credits': final_credits,
-                        'type': final_course_type,
-                        'semester': final_semester,
-                        'year': final_year,
-                        'added_at': course.get('added_at')
-                    }
-                    
-                    logger.info(f"  📦 Formatted course: {formatted_course}")
-                    formatted_courses.append(formatted_course)
-            
-            # Process courses without semester/year (shouldn't populate to DB)
-            for course in courses_without_sem_year:
-                course_id = course.get('id') or course.get('course_id')
-                course_code = course.get('code') or course.get('course_code')
-                course_name = course.get('name') or course.get('course_name')
-                credits = course.get('credits') if course.get('credits') is not None else course.get('credit_hour', 0)
-                course_type = course.get('type', 'core')
-                if 'is_elective' in course and course['is_elective'] is not None:
-                    course_type = 'elective' if course['is_elective'] else 'core'
-                semester = course.get('semester')
-                year = course.get('year')
-                
-                logger.info(f"  ⚠️ Processing course without semester/year: {course_code or 'N/A'}")
-                
-                formatted_course = {
-                    'id': course_id or str(uuid.uuid4()),
-                    'code': course_code or '',
-                    'name': course_name or '',
-                    'credits': credits if credits is not None else 0,
-                    'type': course_type or 'core',
-                    'semester': semester if semester is not None else (student.semester if student.semester is not None else 1),
-                    'year': year if year is not None else (student.year if student.year is not None else 1),
-                    'added_at': course.get('added_at')
-                }
-                formatted_courses.append(formatted_course)
-            
-            # Merge courses instead of replacing - update existing courses by ID, add new ones
-            existing_courses = student_course.courses or []
-            logger.info(f"📊 Current student_courses before merge: {len(existing_courses)} courses")
-            logger.info(f"📋 Courses to merge: {len(formatted_courses)} courses")
-            
-            # Create a dictionary of existing courses by ID for quick lookup
-            existing_courses_dict = {}
-            for existing_course in existing_courses:
-                course_id = str(existing_course.get('id')) if existing_course.get('id') else None
-                if course_id:
-                    existing_courses_dict[course_id] = existing_course
-            
-            # Track which course IDs are in the request (to know what to update vs keep)
-            request_course_ids = set()
-            for formatted_course in formatted_courses:
-                course_id = str(formatted_course.get('id')) if formatted_course.get('id') else None
-                if course_id:
-                    request_course_ids.add(course_id)
-            
-            # Merge: update existing courses or add new ones
-            merged_courses = []
-            updated_count = 0
-            added_count = 0
-            
-            # First, process courses from the request (update existing or add new)
-            for formatted_course in formatted_courses:
-                course_id = str(formatted_course.get('id')) if formatted_course.get('id') else None
-                if course_id and course_id in existing_courses_dict:
-                    # Update existing course - add the updated version
-                    merged_courses.append(formatted_course)
-                    updated_count += 1
-                    logger.info(f"  🔄 Updating existing course: {formatted_course.get('code', 'N/A')} (ID: {course_id})")
-                else:
-                    # Add new course
-                    merged_courses.append(formatted_course)
-                    added_count += 1
-                    logger.info(f"  ➕ Adding new course: {formatted_course.get('code', 'N/A')} (ID: {course_id or 'new'})")
-            
-            # Add all existing courses that weren't in the request (preserve them)
-            preserved_count = 0
-            for course_id, course_data in existing_courses_dict.items():
-                if course_id not in request_course_ids:
-                    merged_courses.append(course_data)
-                    preserved_count += 1
-                    logger.info(f"  💾 Preserving existing course: {course_data.get('code', 'N/A')} (ID: {course_id})")
-            
-            logger.info(f"📊 Merge result: {updated_count} updated, {added_count} added, {preserved_count} preserved, {len(merged_courses)} total courses")
-            logger.info(f"📋 Final courses to save: {merged_courses}")
-            
-            try:
-                # Ensure merged_courses is a list, not None
-                if not merged_courses:
-                    logger.error("❌ merged_courses is empty, nothing to save!")
-                    return Response({
-                        'error': 'No valid courses to save'
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                
-                # Set courses and save
-                logger.info(f"🔧 Setting student_course.courses to merged courses: {len(merged_courses)} courses")
-                student_course.courses = merged_courses
-                
-                # Save explicitly
-                logger.info(f"💾 Calling student_course.save()...")
-                student_course.save(update_fields=['courses', 'updated_at'])
-                
-                # Verify what was actually saved by refreshing from DB
-                logger.info(f"🔄 Refreshing from database...")
-                student_course.refresh_from_db()
-                
-                logger.info(f"✅ Courses saved successfully! Saved courses: {student_course.courses}")
-                logger.info(f"📊 Number of courses saved: {len(student_course.courses) if student_course.courses else 0}")
-                
-                # Double-check by querying the database directly
-                from django.db import transaction
-                with transaction.atomic():
-                    db_student_course = StudentCourse.objects.get(id=student_course.id)
-                    logger.info(f"🔍 Database verification - courses in DB: {db_student_course.courses}")
-                    logger.info(f"🔍 Database verification - number of courses: {len(db_student_course.courses) if db_student_course.courses else 0}")
-            except Exception as save_error:
-                import traceback
-                error_traceback = traceback.format_exc()
-                logger.error("=" * 80)
-                logger.error("❌ FAILED TO SAVE COURSES TO STUDENT_COURSES")
-                logger.error("=" * 80)
-                logger.error(f"Error: {str(save_error)}")
-                logger.error(f"Error Type: {type(save_error).__name__}")
-                logger.error(f"\nFull Traceback:\n{error_traceback}")
-                logger.error("=" * 80)
-                return Response({
-                    'error': f'Failed to save courses: {str(save_error)}'
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
-            # Notify admins if new courses were created
-            if new_courses_created:
-                try:
-                    program_name = getattr(program, 'name', 'Unknown Program') if program else 'Unknown Program'
-                    college_name = 'Unknown College'
-                    university_name = 'Unknown University'
-                    
-                    try:
-                        if program and hasattr(program, 'college') and program.college:
-                            college_name = getattr(program.college, 'name', 'Unknown College')
-                            if hasattr(program.college, 'university') and program.college.university:
-                                university_name = getattr(program.college.university, 'name', 'Unknown University')
-                    except Exception:
-                        pass
-                    
-                    student_name = getattr(student.user, 'display_name', 'Unknown Student') if student and student.user else 'Unknown Student'
-                    
-                    title = f"New Courses Added to Database"
-                    body = f"Student {student_name} has added {len(new_courses_created)} new course(s) for {program_name} ({college_name}, {university_name}):\n\n"
-                    body += "\n".join([f"- {c['code']}: {c['name']} (Semester {c['semester']}, Year {c['year']})" for c in new_courses_created])
-                    body += f"\n\nThese courses are now available for other students in the same program, semester, and academic year."
-                    
-                    notify_admin_users(
-                        title=title,
-                        body=body,
-                        notification_type='info',
-                        link=None
-                    )
-                except Exception as notify_error:
-                    logger.warning(f"Failed to notify admins about new courses: {str(notify_error)}")
-            
-            response_data = {
-                'message': 'Courses updated successfully',
-                'courses': merged_courses,
-                'total_courses': len(merged_courses),
-                'updated': updated_count,
-                'added': added_count,
-                'preserved': preserved_count
-            }
-            if new_courses_created:
-                response_data['new_courses_created'] = len(new_courses_created)
-                response_data['message'] += f' ({len(new_courses_created)} new courses added to Course table)'
-            
-            logger.info("=" * 80)
-            logger.info(f"✅ PUT /api/students/courses/ - Successfully merged: {updated_count} updated, {added_count} added, {preserved_count} preserved, {len(merged_courses)} total")
-            
-            return Response(response_data, status=status.HTTP_200_OK)
-        
-        except Exception as e:
-            # Catch any unexpected errors
-            import traceback
-            error_traceback = traceback.format_exc()
-            logger.error("=" * 80)
-            logger.error("❌ UNEXPECTED ERROR IN STUDENT_COURSES PUT")
-            logger.error("=" * 80)
-            logger.error(f"Error: {str(e)}")
-            logger.error(f"Error Type: {type(e).__name__}")
-            logger.error(f"\nFull Traceback:\n{error_traceback}")
-            logger.error("=" * 80)
-            return Response({
-                'error': f'An unexpected error occurred: {str(e)}'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            cur_year = int(req_year)
+            cur_sem = int(req_sem)
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid year/semester'}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        # Prefer the maximum saved period; fall back to the profile period.
+        periods = student_course.get_periods()
+        cur_year = int(student.year or 1)
+        cur_sem = int(student.semester or 1)
+        if periods:
+            last_key = max(periods, key=lambda k: tuple(int(x) for x in str(k).split('_') if x.isdigit()))
+            parts = [int(x) for x in str(last_key).split('_') if x.isdigit()]
+            if len(parts) >= 2:
+                cur_year, cur_sem = parts[0], parts[1]
+
+    if cur_sem == 1:
+        new_year, new_sem = cur_year, 2
+    else:
+        new_year, new_sem = cur_year + 1, 1
+
+    # Initialize the new period from the catalog (core + elective) if available.
+    catalog_courses, has_catalog = _catalog_for_period(student.program, new_year, new_sem) if student.program_id else ([], False)
+    if has_catalog and not student_course.get_period(new_year, new_sem):
+        seeded = [
+            {
+                'id': str(c.id),
+                'code': c.code,
+                'name': c.name,
+                'credits': c.credits,
+                'type': c.type,
+                'semester': new_sem,
+                'year': new_year,
+                'added_at': None,
+            } for c in catalog_courses
+        ]
+        student_course.set_period(new_year, new_sem, seeded)
+
+    # Bump the student's profile period so the next default advance is correct.
+    student.year = new_year
+    student.semester = new_sem
+    # update_fields is filtered to model fields below.
+    try:
+        student.save(update_fields=['year', 'semester', 'updated_at'])
+    except TypeError:
+        student.save()
+
+    return Response({
+        'message': f'Advanced to Semester {new_sem} Year {new_year}',
+        'year': new_year,
+        'semester': new_sem,
+        'period': StudentCourse.period_key(new_year, new_sem),
+        'courses': student_course.get_period(new_year, new_sem),
+        'catalog_missing': (not has_catalog),
+        'periods': student_course.get_periods(),
+    }, status=status.HTTP_200_OK)
 
 
 # GPA Calculation Views
@@ -2880,7 +2568,7 @@ def timetable_slots(request):
             try:
                 student_course_obj = StudentCourse.objects.get(student=student)
                 # Look for the course in the student's courses JSON
-                for course_data in student_course_obj.courses:
+                for course_data in _all_student_courses(student_course_obj):
                     if course_data.get('id') == course_id:
                         student_course = student_course_obj
                         course_code = course_data.get('code', course_id)
@@ -3012,7 +2700,7 @@ def timetable_slot_detail(request, slot_id):
                 try:
                     student_course_obj = StudentCourse.objects.get(student=slot.student)
                     # Look for the course in the student's courses JSON
-                    for course_data in student_course_obj.courses:
+                    for course_data in _all_student_courses(student_course_obj):
                         if course_data.get('id') == course_id:
                             student_course = student_course_obj
                             course_code = course_data.get('code', course_id)
@@ -3130,7 +2818,7 @@ def timetable_bulk_create(request):
                 try:
                     student_course_obj = StudentCourse.objects.get(student=student)
                     # Look for the course in the student's courses JSON
-                    for course_data in student_course_obj.courses:
+                    for course_data in _all_student_courses(student_course_obj):
                         if course_data.get('id') == course_id:
                             student_course = student_course_obj
                             course_code = course_data.get('code', course_id)

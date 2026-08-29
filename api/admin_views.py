@@ -64,10 +64,10 @@ def _course_ref_count(course_id):
     """Count StudentCourse JSON entries referencing a given course id."""
     target = str(course_id)
     count = 0
-    for sc in StudentCourse.objects.only('id', 'courses'):
-        courses = sc.courses or []
-        if any(str(item.get('id')) == target for item in courses if isinstance(item, dict)):
-            count += 1
+    for sc in StudentCourse.objects.only('id', 'student_id', 'courses'):
+        for items in sc.get_periods().values():
+            if any(str(item.get('id')) == target for item in items if isinstance(item, dict)):
+                count += 1
     return count
 
 
@@ -1255,7 +1255,10 @@ def student_detail(request, student_id):
         id=student_id
     )
     student_course = StudentCourse.objects.filter(student=student).first()
-    selected_courses = (student_course.courses if student_course else []) or []
+    _periods = student_course.get_periods() if student_course else {}
+    selected_courses = []
+    for _key, items in sorted(_periods.items()):
+        selected_courses.extend(items or [])
     selected_courses_count = len(selected_courses)
     
     context = {
@@ -1263,6 +1266,7 @@ def student_detail(request, student_id):
         'student': student,
         'student_course': student_course,
         'selected_courses': selected_courses,
+        'student_periods': _periods,
         'selected_courses_count': selected_courses_count,
     }
     
@@ -1323,7 +1327,10 @@ def user_detail(request, user_id):
         'university', 'college', 'program'
     ).filter(user=profile_user).first()
     student_course = StudentCourse.objects.filter(student=student_profile).first() if student_profile else None
-    selected_courses = (student_course.courses if student_course else []) or []
+    selected_courses = []
+    if student_course:
+        for _key, items in student_course.get_periods().items():
+            selected_courses.extend(items or [])
 
     recent_logins = LoginActivity.objects.filter(user=profile_user).order_by('-login_time')[:20]
     recent_gpa_usage = GPACalculation.objects.filter(user=profile_user).order_by('-created_at')[:20]
@@ -1452,12 +1459,24 @@ def student_selected_course_add(request, student_id):
         messages.error(request, 'Course code and course name are required.')
         return redirect('dashboard-student-detail', student_id=student_id)
 
-    courses = list(student_course.courses or [])
-    courses.append(payload)
-    student_course.courses = courses
-    student_course.save()
+    year = _safe_int(payload.get('year'), student.year or 1)
+    semester = _safe_int(payload.get('semester'), student.semester or 1)
+    student_course.add_course_to_period(year, semester, payload)
     messages.success(request, 'Selected course added successfully.')
     return redirect('dashboard-student-detail', student_id=student_id)
+
+
+def _flatten_periods_with_context(student_course):
+    """Return [(year, semester, course_dict), ...] preserving a stable order."""
+    out = []
+    periods = student_course.get_periods()
+    for key in sorted(periods, key=lambda k: tuple(int(x) for x in str(k).split('_') if x.isdigit())):
+        parts = [int(x) for x in str(key).split('_') if x.isdigit()]
+        year = parts[0] if parts else 1
+        sem = parts[1] if len(parts) > 1 else 1
+        for item in periods[key] or []:
+            out.append((year, sem, item))
+    return out
 
 
 @admin_required
@@ -1465,12 +1484,13 @@ def student_selected_course_add(request, student_id):
 def student_selected_course_edit(request, student_id, course_index):
     student = get_object_or_404(Student, id=student_id)
     student_course = get_object_or_404(StudentCourse, student=student)
-    courses = list(student_course.courses or [])
-    if course_index < 0 or course_index >= len(courses):
+    flat = _flatten_periods_with_context(student_course)
+    if course_index < 0 or course_index >= len(flat):
         messages.error(request, 'Selected course index is invalid.')
         return redirect('dashboard-student-detail', student_id=student_id)
 
-    existing_id = str((courses[course_index] or {}).get('id') or '')
+    year, semester, existing = flat[course_index]
+    existing_id = str((existing or {}).get('id') or '')
     payload = _normalize_student_course_payload(request.POST)
     if existing_id:
         payload['id'] = existing_id
@@ -1478,9 +1498,7 @@ def student_selected_course_edit(request, student_id, course_index):
         messages.error(request, 'Course code and course name are required.')
         return redirect('dashboard-student-detail', student_id=student_id)
 
-    courses[course_index] = payload
-    student_course.courses = courses
-    student_course.save()
+    student_course.update_course_in_period(year, semester, payload)
     messages.success(request, 'Selected course updated successfully.')
     return redirect('dashboard-student-detail', student_id=student_id)
 
@@ -1490,14 +1508,13 @@ def student_selected_course_edit(request, student_id, course_index):
 def student_selected_course_delete(request, student_id, course_index):
     student = get_object_or_404(Student, id=student_id)
     student_course = get_object_or_404(StudentCourse, student=student)
-    courses = list(student_course.courses or [])
-    if course_index < 0 or course_index >= len(courses):
+    flat = _flatten_periods_with_context(student_course)
+    if course_index < 0 or course_index >= len(flat):
         messages.error(request, 'Selected course index is invalid.')
         return redirect('dashboard-student-detail', student_id=student_id)
 
-    removed = courses.pop(course_index)
-    student_course.courses = courses
-    student_course.save()
+    year, semester, removed = flat[course_index]
+    student_course.remove_course_from_period(year, semester, (removed or {}).get('id'))
     removed_code = (removed or {}).get('code', 'course')
     messages.success(request, f'Selected course "{removed_code}" removed successfully.')
     return redirect('dashboard-student-detail', student_id=student_id)

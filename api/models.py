@@ -157,6 +157,10 @@ class Student(models.Model):
 
 
 class StudentCourse(models.Model): 
+    # Version of the canonical "periods" storage shape. Bump only when the
+    # JSON layout itself changes in a breaking way.
+    PERIODS_VERSION = 2
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     student = models.OneToOneField(Student, on_delete=models.CASCADE, related_name='student_courses')
     courses = models.JSONField(default=list, blank=True)
@@ -164,7 +168,7 @@ class StudentCourse(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     def __str__(self):
-        return f"{self.student.user.display_name} - {len(self.courses)} courses"
+        return f"{self.student.user.display_name} - {self.period_count()} course(s) in {len(self.get_periods())} period(s)"
 
     def save(self, *args, **kwargs):
         """
@@ -172,39 +176,242 @@ class StudentCourse(models.Model):
         whether there are any courses stored for the student.
         """
         super().save(*args, **kwargs)
-        has_any_courses = bool(self.courses)
+        has_any_courses = self.period_count() > 0
         if self.student.has_courses != has_any_courses:
             self.student.has_courses = has_any_courses
             # Save only the field that changed to avoid unnecessary writes
             self.student.save(update_fields=['has_courses'])
 
-    def add_course(self, course_data):
-        """
-        Add a course dict to the JSON list if not already present by id.
-        Returns True if added, False if it already existed.
-        """
-        course_id = str(course_data.get('id')) if course_data.get('id') is not None else None
-        existing_ids = {str(c.get('id')) for c in (self.courses or [])}
-        if course_id and course_id in existing_ids:
-            return False
-        courses_list = list(self.courses or [])
-        courses_list.append(course_data)
-        self.courses = courses_list
-        self.save()
-        return True
+    # ------------------------------------------------------------------
+    # Canonical "periods" storage helpers
+    #
+    # The canonical shape of `courses` is:
+    #     {"_v": 2, "periods": {"1_1": [ {course dict}, ... ], "1_2": [...] }}
+    #
+    # Legacy flat arrays (each entry carrying its own year/semester) are
+    # transparently recognized and normalized on read, so every consumer gets
+    # a uniform view regardless of how the data was written historically.
+    # ------------------------------------------------------------------
 
-    def remove_course(self, course_id):
+    @staticmethod
+    def _course_dict(d):
+        """Normalize a single course entry to canonical keys (id/code/name/credits/type/semester/year/added_at)."""
+        if not isinstance(d, dict):
+            return None
+        cid = d.get('id') or d.get('course_id') or str(uuid.uuid4())
+        code = (d.get('code') or d.get('course_code') or '').strip()
+        name = d.get('name') or d.get('course_name') or ''
+        credits = d.get('credits')
+        if credits is None:
+            credits = d.get('credit_hour', 0)
+        try:
+            credits = int(credits or 0)
+        except (TypeError, ValueError):
+            credits = 0
+        t = (str(d.get('type') or '')).strip().lower()
+        if t in ('elective', 'optional'):
+            ctype = 'elective'
+        elif t == 'core':
+            ctype = 'core'
+        elif d.get('is_elective') is not None:
+            ctype = 'elective' if d['is_elective'] else 'core'
+        else:
+            ctype = 'core'
+        return {
+            'id': str(cid),
+            'code': code,
+            'name': name,
+            'credits': credits,
+            'type': ctype,
+            'semester': d.get('semester'),
+            'year': d.get('year'),
+            'added_at': d.get('added_at'),
+        }
+
+    @classmethod
+    def period_key(cls, year, semester):
+        return f"{int(year)}_{int(semester)}"
+
+    def ensure_periods(self):
+        """Return the canonical periods dict, converting legacy flat lists in place (not persisted)."""
+        raw = self.courses
+        if isinstance(raw, dict) and isinstance(raw.get('periods'), dict):
+            periods = {}
+            for key, items in raw['periods'].items():
+                if not isinstance(items, list):
+                    continue
+                cleaned = []
+                for d in items:
+                    cd = self._course_dict(d)
+                    if cd:
+                        cleaned.append(cd)
+                periods[str(key)] = cleaned
+            return {'_v': self.PERIODS_VERSION, 'periods': periods}
+        # Legacy flat list: group by (year, semester).
+        periods = {}
+        if isinstance(raw, list):
+            for d in raw:
+                cd = self._course_dict(d)
+                if not cd:
+                    continue
+                year = cd.get('year')
+                sem = cd.get('semester')
+                if year is None or sem is None:
+                    year = self.student.year if self.student_id else 1
+                    sem = self.student.semester if self.student_id else 1
+                try:
+                    year = int(year)
+                except (TypeError, ValueError):
+                    year = self.student.year if self.student_id else 1
+                try:
+                    sem = int(sem)
+                except (TypeError, ValueError):
+                    sem = self.student.semester if self.student_id else 1
+                cd['year'] = year
+                cd['semester'] = sem
+                periods.setdefault(self.period_key(year, sem), []).append(cd)
+        return {'_v': self.PERIODS_VERSION, 'periods': periods}
+
+    def get_periods(self):
+        """Return {period_key: [course dict, ...]} for all periods."""
+        return self.ensure_periods().get('periods', {})
+
+    def period_count(self):
+        """Total number of courses across all periods."""
+        return sum(len(v) for v in self.get_periods().values())
+
+    def get_period(self, year, semester):
+        """Return the list of course dicts for a given (year, semester), or []."""
+        return self.get_periods().get(self.period_key(year, semester), [])
+
+    def set_period(self, year, semester, courses, save=True):
         """
-        Remove a course from the JSON list by its id. Returns True if removed.
+        Replace ONLY the given (year, semester) period's courses, preserving
+        every other period untouched. `courses` may be a list of raw dicts.
+        Returns the list of normalized course dicts that were stored.
+        """
+        cleaned = []
+        for d in courses or []:
+            cd = self._course_dict(d)
+            if not cd:
+                continue
+            cd['year'] = int(year)
+            cd['semester'] = int(semester)
+            cleaned.append(cd)
+        periods = self.get_periods()
+        periods[self.period_key(year, semester)] = cleaned
+        self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
+        if save:
+            self.save()
+        return cleaned
+
+    def add_course_to_period(self, year, semester, course_data, save=True):
+        """
+        Add a course to the given period if not already present by id.
+        Returns (course_dict, added: bool).
+        """
+        cd = self._course_dict(course_data)
+        if not cd:
+            return (None, False)
+        cd['year'] = int(year)
+        cd['semester'] = int(semester)
+        key = self.period_key(year, semester)
+        periods = self.get_periods()
+        items = periods.setdefault(key, [])
+        existing_ids = {str(c.get('id')) for c in items if isinstance(c, dict)}
+        if cd['id'] in existing_ids:
+            return (cd, False)
+        items.append(cd)
+        periods[key] = items
+        self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
+        if save:
+            self.save()
+        return (cd, True)
+
+    def update_course_in_period(self, year, semester, course_data, save=True):
+        """
+        Update an existing course (matched by id) within the given period.
+        Returns (course_dict, updated: bool).
+        """
+        cd = self._course_dict(course_data)
+        if not cd:
+            return (None, False)
+        cd['year'] = int(year)
+        cd['semester'] = int(semester)
+        key = self.period_key(year, semester)
+        periods = self.get_periods()
+        items = periods.get(key, [])
+        target_id = cd['id']
+        for i, existing in enumerate(items):
+            if isinstance(existing, dict) and str(existing.get('id')) == target_id:
+                items[i] = cd
+                periods[key] = items
+                self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
+                if save:
+                    self.save()
+                return (cd, True)
+        return (None, False)
+
+    def remove_course_from_period(self, year, semester, course_id, save=True):
+        """
+        Remove a course by id from the given period. Returns True if removed.
         """
         target_id = str(course_id)
-        original_len = len(self.courses or [])
-        filtered = [c for c in (self.courses or []) if str(c.get('id')) != target_id]
-        if len(filtered) == original_len:
+        key = self.period_key(year, semester)
+        periods = self.get_periods()
+        items = periods.get(key, [])
+        filtered = [c for c in items if not (isinstance(c, dict) and str(c.get('id')) == target_id)]
+        if len(filtered) == len(items):
             return False
-        self.courses = filtered
-        self.save()
+        if filtered:
+            periods[key] = filtered
+        else:
+            periods.pop(key, None)
+        self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
+        if save:
+            self.save()
         return True
+
+    def remove_period(self, year, semester, save=True):
+        """Remove an entire period (all its courses). Returns True if it existed."""
+        key = self.period_key(year, semester)
+        periods = self.get_periods()
+        if key not in periods:
+            return False
+        del periods[key]
+        self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
+        if save:
+            self.save()
+        return True
+
+    # Backward-compatible wrappers used by older code paths.
+
+    def add_course(self, course_data):
+        """Legacy: add a single course into its own (year, semester) period."""
+        year = course_data.get('year') or self.student.year or 1
+        semester = course_data.get('semester') or self.student.semester or 1
+        _, added = self.add_course_to_period(year, semester, course_data)
+        return added
+
+    def remove_course(self, course_id):
+        """Legacy: remove a course by id from whichever period contains it."""
+        for key, items in self.get_periods().items():
+            for item in items:
+                if isinstance(item, dict) and str(item.get('id')) == str(course_id):
+                    parts = str(key).split('_')
+                    year = int(parts[0]) if parts else 1
+                    sem = int(parts[1]) if len(parts) > 1 else 1
+                    return self.remove_course_from_period(year, sem, course_id)
+        return False
+
+    def next_period(self, year, semester):
+        """
+        Given a (year, semester), return the (next_year, next_semester) tuple
+        treating the year as 1-indexed with two semesters per academic year.
+        """
+        if int(semester) == 1:
+            return (int(year), 2)
+        return (int(year) + 1, 1)
 
 
 class StudentTerm(models.Model):

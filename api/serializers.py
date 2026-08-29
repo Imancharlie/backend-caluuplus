@@ -201,9 +201,12 @@ class StudentSerializer(serializers.ModelSerializer):
 
     def get_courses(self, obj):
         try:
-            return obj.student_courses.courses or []
+            store = obj.student_courses.ensure_periods()
+            if isinstance(store, dict) and 'periods' in store:
+                return store
+            return {'_v': 2, 'periods': {}}
         except ObjectDoesNotExist:
-            return []
+            return {'_v': 2, 'periods': {}}
 
 
 class StudentCreateUpdateSerializer(serializers.ModelSerializer):
