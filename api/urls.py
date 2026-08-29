@@ -90,6 +90,13 @@ urlpatterns = [
     path('students/courses/period/<int:year>/<int:semester>/delete/', views.remove_student_course_period, name='remove-student-course-period'),
     path('students/courses/period/<int:year>/<int:semester>/<uuid:course_id>/', views.remove_student_course_from_period, name='remove-student-course-from-period'),
     path('students/courses/<uuid:course_id>/', views.remove_course, name='remove-course'),
+
+    # Term / enrollment based course & grade management (StudentTerm + Enrollment)
+    path('students/terms/', views.student_terms_list, name='student-terms-list'),
+    path('students/terms/<int:year>/<int:semester>/courses/', views.student_term_courses, name='student-term-courses'),
+    path('students/terms/<int:year>/<int:semester>/grades/', views.student_term_grades, name='student-term-grades'),
+    path('students/terms/<int:year>/<int:semester>/courses/<uuid:course_id>/', views.remove_student_term_course, name='remove-student-term-course'),
+    path('students/terms/<int:year>/<int:semester>/', views.student_term_detail, name='student-term-detail'),
     
     # GPA Calculation endpoints
     path('students/gpa/', views.calculate_gpa, name='calculate-gpa'),

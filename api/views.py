@@ -11,7 +11,7 @@ from django.db import models
 import re
 import time
 from .gpa_privacy import encrypt_gpa_for_user
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation, StudentTerm, StudentCourseEnrollment
 from .serializers import ArticleSerializer
 from .serializers import ArticleCommentSerializer, ArticleCommentCreateSerializer
 from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university
@@ -273,7 +273,8 @@ from .serializers import (
     UniversitySerializer, CollegeSerializer, ProgramSerializer, CourseSerializer,
     StudentSerializer, StudentCreateUpdateSerializer, StudentCourseSerializer,
     GPABreakdownSerializer, TargetGPASerializer, CourseAddSerializer, StudentCourseUpdateSerializer,
-    QuoteSerializer
+    QuoteSerializer,
+    TermCourseSerializer, TermCoursesUpdateSerializer, TermGradesUpdateSerializer,
 )
 
 
@@ -1744,6 +1745,265 @@ def advance_student_period(request):
         'catalog_missing': (not has_catalog),
         'periods': student_course.get_periods(),
     }, status=status.HTTP_200_OK)
+
+
+# =============================================================================
+# Term / Enrollment based course management (StudentTerm + StudentCourseEnrollment)
+#
+# These endpoints are the relational, per-year/semester alternative to the JSON
+# StudentCourse store. They are purely additive and do NOT touch the legacy JSON
+# path. Course codes are the natural key within a term; grades/marks/points are
+# stored here and are what the GPA-related screens read.
+# =============================================================================
+
+def _get_student(request):
+    """Return the authenticated student or a 404 Response."""
+    try:
+        return Student.objects.get(user=request.user)
+    except Student.DoesNotExist:
+        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+def _points_for_grade(university, grade):
+    """Map a letter grade to grade points using the university's grade scheme config."""
+    if not grade:
+        return None
+    g = str(grade).strip().upper()
+    if university:
+        config = university.grade_scheme_config or {}
+        lp = config.get('letter_points')
+        if isinstance(lp, dict) and g in lp:
+            try:
+                return round(float(lp[g]), 2)
+            except (TypeError, ValueError):
+                return None
+    default_map = {'A': 5.0, 'B+': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'E': 0.0}
+    return default_map.get(g)
+
+
+def _points_for_marks(university, marks):
+    """Map raw marks (0-100) to grade points using the university's thresholds config."""
+    if marks is None:
+        return None
+    try:
+        marks = int(marks)
+    except (TypeError, ValueError):
+        return None
+    if university:
+        config = university.grade_scheme_config or {}
+        thresholds = config.get('thresholds')
+        if isinstance(thresholds, list):
+            best = None
+            for row in thresholds:
+                if not isinstance(row, (list, tuple)) or len(row) < 3:
+                    continue
+                try:
+                    min_marks, slope, intercept = float(row[0]), float(row[1]), float(row[2])
+                except (TypeError, ValueError):
+                    continue
+                if marks >= min_marks:
+                    best = (slope * marks) + intercept
+            if best is not None:
+                return round(max(0.0, best), 2)
+    return None
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def student_terms_list(request):
+    """List all academic terms for the authenticated student with enrollment counts."""
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
+    terms = StudentTerm.objects.filter(student=student).order_by('academic_year', 'semester')
+    data = [
+        {
+            'id': str(t.id),
+            'academic_year': t.academic_year,
+            'semester': t.semester,
+            'period': f"{t.academic_year}_{t.semester}",
+            'enrollment_count': t.enrollments.count(),
+            'created_at': t.created_at.isoformat(),
+            'updated_at': t.updated_at.isoformat(),
+        }
+        for t in terms
+    ]
+    return Response({'terms': data, 'total': len(data)}, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def student_term_detail(request, year, semester):
+    """Get a single term's enrolled courses plus catalog availability for that period."""
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
+    term, _ = StudentTerm.objects.get_or_create(
+        student=student, academic_year=year, semester=semester)
+    enrollments = term.enrollments.all()
+
+    catalog_courses, has_catalog = [], False
+    if student.program_id:
+        catalog_courses, has_catalog = _catalog_for_period(student.program, year, semester)
+
+    return Response({
+        'period': f"{year}_{semester}",
+        'academic_year': year,
+        'semester': semester,
+        'term_id': str(term.id),
+        'courses': TermCourseSerializer(enrollments, many=True).data,
+        'total_courses': enrollments.count(),
+        'catalog_missing': (not has_catalog),
+        'catalog': {
+            'has_courses': has_catalog,
+            'total': len(catalog_courses),
+            'courses': [
+                {'id': str(c.id), 'code': c.code, 'name': c.name,
+                 'credits': c.credits, 'type': c.type} for c in catalog_courses
+            ],
+        },
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([permissions.IsAuthenticated])
+def student_term_courses(request, year, semester):
+    """Replace a term's courses.
+
+    Body: {"courses": [ {code, name?, credits?, type?, course_id?}, ... ]}
+    Upserts by course code within the term; any existing enrollment whose code is
+    not present in the payload is removed. Other terms are untouched.
+    """
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
+    serializer = TermCoursesUpdateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    term, _ = StudentTerm.objects.get_or_create(
+        student=student, academic_year=year, semester=semester)
+    keep_ids = set()
+    for item in serializer.validated_data['courses']:
+        code = (item.get('code') or '').strip()
+        if not code:
+            continue
+        course = None
+        if item.get('course_id'):
+            course = Course.objects.filter(pk=item['course_id']).first()
+        enrollment, _ = StudentCourseEnrollment.objects.get_or_create(
+            term=term,
+            code=code,
+            defaults={
+                'course': course,
+                'name': item.get('name') or code,
+                'credits': item.get('credits') if item.get('credits') is not None else 0,
+                'type': 'elective' if (item.get('type') or 'core') in ('elective', 'optional') else 'core',
+            },
+        )
+        if item.get('name'):
+            enrollment.name = item['name']
+        if item.get('credits') is not None:
+            enrollment.credits = item['credits']
+        if item.get('type'):
+            enrollment.type = 'elective' if item['type'] in ('elective', 'optional') else 'core'
+        if course is not None:
+            enrollment.course = course
+        enrollment.save()
+        keep_ids.add(enrollment.id)
+
+    if keep_ids:
+        term.enrollments.exclude(id__in=keep_ids).delete()
+    else:
+        term.enrollments.all().delete()
+
+    return Response({
+        'message': f'Successfully saved {len(keep_ids)} course(s) for Semester {semester} Year {year}',
+        'period': f"{year}_{semester}",
+        'total_courses': term.enrollments.count(),
+        'courses': TermCourseSerializer(term.enrollments.all(), many=True).data,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([permissions.IsAuthenticated])
+def student_term_grades(request, year, semester):
+    """Update grades/marks for a term's existing courses.
+
+    Body: {"courses": [ {code: <code> or id: <enrollment id>, grade?, marks?}, ... ]}
+    Grade points are recomputed automatically from the university's scheme
+    (letter grades -> points, or marks -> points via thresholds) unless the
+    university scheme leaves it undefined.
+    """
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
+    serializer = TermGradesUpdateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    term, _ = StudentTerm.objects.get_or_create(
+        student=student, academic_year=year, semester=semester)
+    updated = 0
+    for item in serializer.validated_data.get('courses', []):
+        code = (item.get('code') or '').strip()
+        enrollment = None
+        if code:
+            enrollment = term.enrollments.filter(code=code).first()
+        if enrollment is None and item.get('id'):
+            try:
+                enrollment = term.enrollments.filter(pk=item['id']).first()
+            except (TypeError, ValueError):
+                enrollment = None
+        if enrollment is None:
+            continue
+
+        if item.get('grade') is not None:
+            enrollment.grade = item['grade']
+        if item.get('marks') is not None:
+            enrollment.marks = item['marks']
+
+        if student.university.grade_scheme == 'marks' and enrollment.marks is not None:
+            pts = _points_for_marks(student.university, enrollment.marks)
+        else:
+            pts = _points_for_grade(student.university, enrollment.grade)
+        if pts is not None:
+            enrollment.points = pts
+        enrollment.save()
+        updated += 1
+
+    return Response({
+        'message': f'Updated grades for {updated} course(s) in Semester {semester} Year {year}',
+        'period': f"{year}_{semester}",
+        'total_courses': term.enrollments.count(),
+        'courses': TermCourseSerializer(term.enrollments.all(), many=True).data,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['DELETE'])
+@permission_classes([permissions.IsAuthenticated])
+def remove_student_term_course(request, year, semester, course_id):
+    """Remove a single course enrollment from a term."""
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
+    term = StudentTerm.objects.filter(
+        student=student, academic_year=year, semester=semester).first()
+    if not term:
+        return Response({'error': 'Term not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    deleted, _ = term.enrollments.filter(pk=course_id).delete()
+    if deleted:
+        return Response({
+            'message': f'Course removed from Semester {semester} Year {year}',
+            'period': f"{year}_{semester}",
+        }, status=status.HTTP_200_OK)
+    return Response({'error': 'Course not found in this term'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # GPA Calculation Views

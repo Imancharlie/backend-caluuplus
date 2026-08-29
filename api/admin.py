@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, UniversityLink, GPACalculation
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, UniversityLink, GPACalculation,StudentTerm, StudentCourseEnrollment
 
 
 @admin.register(User)
@@ -286,3 +286,62 @@ class GPACalculationAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         })
     )
+
+class StudentCourseEnrollmentInline(admin.TabularInline):
+    model = StudentCourseEnrollment
+    extra = 1
+    fields = ('code', 'name', 'credits', 'type', 'grade', 'marks', 'points', 'course')
+    autocomplete_fields = ['course']
+
+
+@admin.register(StudentTerm)
+class StudentTermAdmin(admin.ModelAdmin):
+    list_display = ('student', 'academic_year', 'semester', 'enrollment_count', 'created_at')
+    list_filter = ('academic_year', 'semester', 'created_at')
+    search_fields = ('student__user__display_name', 'student__user__email')
+    ordering = ('student', 'academic_year', 'semester')
+    readonly_fields = ('id', 'created_at', 'updated_at')
+    inlines = [StudentCourseEnrollmentInline]
+
+    fieldsets = (
+        ('Term Details', {
+            'fields': ('student', 'academic_year', 'semester')
+        }),
+        ('System Information', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+
+    def enrollment_count(self, obj):
+        return obj.enrollments.count()
+    enrollment_count.short_description = 'Enrolled Courses'
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('student__user')
+
+
+@admin.register(StudentCourseEnrollment)
+class StudentCourseEnrollmentAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'term', 'credits', 'type', 'grade', 'marks', 'points')
+    list_filter = ('type', 'grade', 'term__academic_year', 'term__semester')
+    search_fields = ('code', 'name', 'term__student__user__display_name', 'term__student__user__email')
+    ordering = ('term', 'code')
+    readonly_fields = ('id', 'created_at', 'updated_at')
+    autocomplete_fields = ['term', 'course']
+
+    fieldsets = (
+        ('Course Information', {
+            'fields': ('term', 'course', 'code', 'name', 'credits', 'type')
+        }),
+        ('Academic Performance', {
+            'fields': ('grade', 'marks', 'points')
+        }),
+        ('System Information', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('term__student__user', 'course')

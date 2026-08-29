@@ -227,7 +227,8 @@ class StudentTermSerializer(serializers.ModelSerializer):
 
 
 class TermCourseSerializer(serializers.ModelSerializer):
-    course_id = serializers.UUIDField(source='course_id', read_only=True)
+    course_id = serializers.UUIDField(read_only=True)
+    points = serializers.FloatField(read_only=True, allow_null=True)
 
     class Meta:
         model = StudentCourseEnrollment
