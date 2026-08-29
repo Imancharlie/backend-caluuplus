@@ -19,4 +19,11 @@ urlpatterns = [
     path("referrals/", views.ReferralView.as_view(), name="token-referral"),
     path("referrals/list/", views.ReferralListView.as_view(), name="token-referral-list"),
     path("admin/adjust/", views.AdminAdjustmentView.as_view(), name="token-admin-adjust"),
+    path("admin/rules/", views.AdminRuleListView.as_view(), name="token-admin-rules"),
+    path("admin/rules/<uuid:pk>/", views.AdminRuleUpdateView.as_view(), name="token-admin-rule-detail"),
+    path("admin/packages/", views.AdminPackageView.as_view(), name="token-admin-packages"),
+    path("admin/packages/<uuid:pk>/", views.AdminPackageUpdateView.as_view(), name="token-admin-package-detail"),
+    path("admin/redemptions/", views.AdminRedemptionListView.as_view(), name="token-admin-redemptions"),
+    path("admin/redemptions/<uuid:pk>/<str:action>/", views.AdminRedemptionReviewView.as_view(), name="token-admin-redemption-review"),
+    path("admin/users/", views.AdminUserSearchView.as_view(), name="token-admin-users"),
 ]

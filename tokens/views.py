@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from . import services as token_service
 from . import services
 from .models import (
+    ConsumptionRule,
     RedemptionRequest,
     Referral,
     ReferralCode,
@@ -16,8 +17,10 @@ from .models import (
     TokenWallet,
 )
 from .serializers import (
+    AdminRedemptionRequestSerializer,
     RedemptionRequestSerializer,
     TokenPackageSerializer,
+    TokenRuleSerializer,
     TokenTransactionSerializer,
     TokenWalletSerializer,
 )
@@ -440,3 +443,173 @@ class AdminAdjustmentView(APIView):
         except services.TokenError as exc:
             return _error(exc)
         return Response(result, status=status.HTTP_200_OK)
+
+
+# ---------------------------------------------------------------------------
+# Admin: Configure the economy (rules, packages) & manage redemptions
+# ---------------------------------------------------------------------------
+
+class AdminRuleListView(APIView):
+    """
+    GET  /api/tokens/admin/rules/
+    POST /api/tokens/admin/rules/   (staff only)
+
+    Lists all reward & consumption rules (both active and inactive) and lets
+    staff create a new rule. Body: {"kind": "reward"|"consumption", "key",
+    "label", "amount", "is_active", "description"}.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        reward_rules = RewardRule.objects.order_by("key")
+        consumption_rules = ConsumptionRule.objects.order_by("key")
+        data = {
+            "rules": {
+                "reward": TokenRuleSerializer(reward_rules, many=True).data,
+                "consumption": TokenRuleSerializer(consumption_rules, many=True).data,
+            }
+        }
+        return Response(data)
+
+    def post(self, request):
+        kind = request.data.get("kind", "reward")
+        model = RewardRule if kind == "reward" else ConsumptionRule
+        serializer = TokenRuleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        rule = model.objects.create(**serializer.validated_data)
+        return Response(TokenRuleSerializer(rule).data, status=status.HTTP_201_CREATED)
+
+
+class AdminRuleUpdateView(APIView):
+    """
+    PATCH /api/tokens/admin/rules/{id}/   (staff only)
+    Updates a reward or consumption rule (amount, label, is_active, ...).
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def patch(self, request, pk):
+        rule = RewardRule.objects.filter(pk=pk).first() or ConsumptionRule.objects.filter(pk=pk).first()
+        if rule is None:
+            return Response({"error": "Rule not found", "code": "not_found"},
+                            status=status.HTTP_404_NOT_FOUND)
+        serializer = TokenRuleSerializer(rule, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class AdminPackageView(APIView):
+    """
+    GET  /api/tokens/admin/packages/       (staff only)
+    POST /api/tokens/admin/packages/       (staff only)
+    Creates admin-readable list of packages or a new package.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        packages = TokenPackage.objects.order_by("sort_order", "token_amount")
+        return Response({"packages": TokenPackageSerializer(packages, many=True).data})
+
+    def post(self, request):
+        serializer = TokenPackageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AdminPackageUpdateView(APIView):
+    """
+    PATCH /api/tokens/admin/packages/{id}/   (staff only)
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def patch(self, request, pk):
+        package = TokenPackage.objects.filter(pk=pk).first()
+        if package is None:
+            return Response({"error": "Package not found", "code": "not_found"},
+                            status=status.HTTP_404_NOT_FOUND)
+        serializer = TokenPackageSerializer(package, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class AdminRedemptionListView(APIView):
+    """
+    GET /api/tokens/admin/redemptions/?status=&page=   (staff only)
+    Lists ALL user redemption requests for admin review.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        qs = RedemptionRequest.objects.select_related("user", "wallet").order_by("-created_at")
+        s = request.query_params.get("status")
+        if s:
+            qs = qs.filter(status=s)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        data = AdminRedemptionRequestSerializer(page if page is not None else qs, many=True).data
+        return paginator.get_paginated_response(data)
+
+
+class AdminRedemptionReviewView(APIView):
+    """
+    POST /api/tokens/admin/redemptions/{id}/{approve|reject|complete}/   (staff only)
+    Approves, rejects or completes a redemption request.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk, action):
+        redemption = RedemptionRequest.objects.filter(pk=pk).select_related("wallet", "user").first()
+        if redemption is None:
+            return Response({"error": "Redemption not found", "code": "not_found"},
+                            status=status.HTTP_404_NOT_FOUND)
+        try:
+            if action == "approve":
+                if redemption.status != "pending":
+                    return Response({"error": "Only pending redemptions can be approved", "code": "invalid_state"},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                token_service.approve_redemption(redemption, request.user, note=request.data.get("note", ""))
+            elif action == "reject":
+                token_service.reject_redemption(redemption, request.user, reason=request.data.get("note", ""))
+            elif action == "complete":
+                token_service.complete_redemption(redemption, request.user, payout_ref=request.data.get("note", ""))
+            else:
+                return Response({"error": "Invalid action", "code": "invalid_action"},
+                                status=status.HTTP_400_BAD_REQUEST)
+        except services.TokenError as exc:
+            return _error(exc)
+        return Response(AdminRedemptionRequestSerializer(redemption).data, status=status.HTTP_200_OK)
+
+
+class AdminUserSearchView(APIView):
+    """
+    GET /api/tokens/admin/users/?q=   (staff only)
+    Returns a compact list of users whose display_name, email or username
+    match the search term. Used by the mobile admin UI to find a user so an
+    admin can adjust their token balance by email/name instead of raw UUID.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        from django.contrib.auth import get_user_model
+        from django.db.models import Q
+        User = get_user_model()
+        q = (request.query_params.get("q") or "").strip()
+        queryset = User.objects.all()
+        if q:
+            queryset = queryset.filter(
+                Q(display_name__icontains=q)
+                | Q(email__icontains=q)
+                | Q(username__icontains=q)
+            )
+        queryset = queryset.order_by("display_name")[:20]
+        data = [
+            {
+                "id": str(u.pk),
+                "display_name": u.display_name,
+                "email": u.email,
+            }
+            for u in queryset
+        ]
+        return Response({"users": data})
