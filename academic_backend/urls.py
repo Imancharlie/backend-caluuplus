@@ -35,6 +35,7 @@ urlpatterns = [
     path("api/map/", include("caluu_map.urls")),
     path("backups/", include(("backups.urls", "backups"), namespace="backups")),
     path("api/tokens/", include("tokens.urls")),
+    path("api/", include("academia.urls")),
     # OpenAPI documentation
     path("api/docs/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(
