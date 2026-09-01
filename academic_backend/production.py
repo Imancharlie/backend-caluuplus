@@ -18,6 +18,14 @@ ALLOWED_HOSTS = build_allowed_hosts(
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load environment variables from the .env file (if present) so os.getenv calls
+# below (GEMINI_API_KEY, ANTHROPIC_API_KEY, etc.) see values configured there.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR / '.env')
+except Exception:
+    pass
+
 # Firebase initialization
 FIREBASE_CREDENTIALS_PATH = os.path.join(
     BASE_DIR,
@@ -186,6 +194,7 @@ AUTH_USER_MODEL = 'api.User'
 # Gemini API Key
 # Reads from environment only. Never commit a real key to source.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Pricing configuration 

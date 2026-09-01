@@ -170,6 +170,40 @@ class VectorSearchService:
             return float(np.dot(q_vec, d_vec) / (qn * dn))
         except Exception:
             return 0.0
+
+    def _batch_semantic_scores(self, query_vec, docs) -> Dict[str, float]:
+        """Vectorized cosine similarity against every stored doc embedding.
+
+        Returns ``{doc_id: cosine_score}`` for all documents that have a
+        precomputed embedding (documents without one are left out so the caller
+        keeps keyword-only scoring for them). Runs in a single numpy pass —
+        milliseconds even for a large knowledge base.
+        """
+        if query_vec is None or NUMPY_AVAILABLE is False or np is None:
+            return {}
+        arrays = []
+        doc_ids = []
+        for doc in docs:
+            if isinstance(doc, dict):
+                continue
+            emb = self._load_embedding(doc)
+            if emb is not None:
+                doc_ids.append(str(doc.id))
+                arrays.append(emb)
+        if not arrays:
+            return {}
+        try:
+            mat = np.stack(arrays).astype('float32')
+            q = np.array(query_vec, dtype='float32').reshape(-1)
+            qn = float(np.linalg.norm(q))
+            if qn == 0.0:
+                return {}
+            norms = np.linalg.norm(mat, axis=1)
+            norms[norms == 0.0] = 1e-9
+            sims = (mat @ q) / (norms * qn)
+            return {doc_ids[i]: float(sims[i]) for i in range(len(doc_ids))}
+        except Exception:
+            return {}
     
     def _categorize_query(self, query: str) -> List[str]:
         """Categorize query to determine relevant document types"""
@@ -302,7 +336,12 @@ class VectorSearchService:
             # Normalize query for better cache hits (lowercase, strip whitespace)
             normalized_query = query.lower().strip()
             cache_key = f"rag_search_{hash(normalized_query)}_{university_id}_{top_k}"
-            cached_results = cache.get(cache_key)
+            cached_results = None
+            try:
+                cached_results = cache.get(cache_key)
+            except Exception as e:
+                # Cache backend (Redis) may be down — fail open, never fail the search.
+                logger.warning(f"RAG cache read failed ({e}); continuing without cache.")
             if cached_results:
                 logger.info(f"RAG cache hit for query: {query[:50]}")
                 return cached_results
@@ -329,30 +368,39 @@ class VectorSearchService:
             queryset = KnowledgeDocument.objects.filter(is_active=True)
             if university_id:
                 queryset = queryset.filter(Q(university_id=university_id) | Q(university__isnull=True))
-            
-            # Try to filter by category if detected, but don't be too restrictive
-            original_queryset = queryset
-            if categories:
-                doc_categories = [self.category_map.get(c, 'faq') for c in categories]
-                category_queryset = queryset.filter(category__in=doc_categories)
-                # Get candidate documents from category-filtered queryset
-                candidate_docs = list(category_queryset.select_related('university')[:top_k * 3])
-                logger.info(f"Category filter: {doc_categories}, found {len(candidate_docs)} documents")
+
+            # When semantic search is available, score the FULL knowledge base
+            # (not a small candidate cap) — real ANN-quality semantic RAG.
+            if use_semantic and self.model is not None:
+                candidate_docs = list(queryset.select_related('university'))
+                logger.info(f"Semantic search: scoring all {len(candidate_docs)} active documents")
             else:
-                candidate_docs = []
-            
-            # If no category match or very few results, also search all documents
-            if len(candidate_docs) < top_k:
-                # Get additional documents from all categories
-                all_docs = list(original_queryset.select_related('university')[:top_k * 5])
-                # Combine and deduplicate
-                existing_ids = {doc.id for doc in candidate_docs}
-                for doc in all_docs:
-                    if doc.id not in existing_ids:
-                        candidate_docs.append(doc)
-                        if len(candidate_docs) >= top_k * 3:
-                            break
-                logger.info(f"Expanded search: total {len(candidate_docs)} candidate documents")
+                # Try to filter by category if detected, but don't be too restrictive
+                original_queryset = queryset
+                if categories:
+                    doc_categories = [self.category_map.get(c, 'faq') for c in categories]
+                    category_queryset = queryset.filter(category__in=doc_categories)
+                    candidate_docs = list(category_queryset.select_related('university')[:top_k * 3])
+                    logger.info(f"Category filter: {doc_categories}, found {len(candidate_docs)} documents")
+                else:
+                    candidate_docs = []
+
+                # If no category match or very few results, also search all documents
+                if len(candidate_docs) < top_k:
+                    all_docs = list(original_queryset.select_related('university')[:top_k * 5])
+                    existing_ids = {doc.id for doc in candidate_docs}
+                    for doc in all_docs:
+                        if doc.id not in existing_ids:
+                            candidate_docs.append(doc)
+                            if len(candidate_docs) >= top_k * 3:
+                                break
+                    logger.info(f"Expanded search: total {len(candidate_docs)} candidate documents")
+
+            # Precompute semantic scores in one vectorized pass (fast, accurate)
+            semantic_scores = {}
+            if query_embedding is not None and use_semantic:
+                semantic_scores = self._batch_semantic_scores(query_embedding, candidate_docs)
+                logger.info(f"Vectorized semantic pass: {len(semantic_scores)} scored documents")
 
             # CONTENT AWARENESS (Phase 4): index published articles + approved
             # opportunities into the SAME candidate set, flagged by source_type.
@@ -418,14 +466,13 @@ class VectorSearchService:
                     usage_count = int(getattr(doc, 'usage_count', 0))
                     source_type = None
 
-                # Semantic similarity score
+                # Semantic similarity score (precomputed vectorized pass for KB docs)
                 semantic_score = 0.0
                 if query_embedding is not None and use_semantic:
-                    # Prefer the precomputed stored embedding for KB documents.
-                    stored_emb = self._load_embedding(doc) if not isinstance(doc, dict) else None
-                    if stored_emb is not None:
-                        semantic_score = self._cosine(query_embedding, stored_emb)
+                    if not isinstance(doc, dict):
+                        semantic_score = semantic_scores.get(str(doc.id), 0.0)
                     else:
+                        # Articles/opportunities have no stored embedding — compute live
                         doc_text = f"{title}. {content[:300]}"
                         semantic_score = self._calculate_semantic_similarity(query_embedding, doc_text)
 
@@ -433,9 +480,17 @@ class VectorSearchService:
                 keyword_score = self._calculate_keyword_relevance(query, title, content, tags)
 
                 # Hybrid score: combine semantic and keyword
-                if use_hybrid and semantic_score > 0:
-                    # Weighted combination: 70% semantic, 30% keyword
-                    hybrid_score = (semantic_score * 0.7) + (min(keyword_score / 30.0, 1.0) * 0.3)
+                # When semantic embeddings are available they are the PRIMARY
+                # signal (75% weight). A document with a negative or missing
+                # semantic match can only reach a low keyword-only ceiling, so
+                # unrelated long articles can't pollute the ranking.
+                if (query_embedding is not None and use_semantic) and semantic_score > 0:
+                    # Weighted combination: 75% semantic, 25% keyword
+                    kw_norm = min(keyword_score / 30.0, 1.0)
+                    hybrid_score = (semantic_score * 0.75) + (kw_norm * 0.25)
+                elif query_embedding is not None and use_semantic:
+                    # No semantic match (zero/negative) — keyword influence capped low.
+                    hybrid_score = min(keyword_score / 30.0, 1.0) * 0.25
                 elif semantic_score > 0:
                     hybrid_score = semantic_score
                 else:
@@ -510,17 +565,20 @@ class VectorSearchService:
                         logger.warning(f"Error incrementing usage for doc {doc.id}: {e}")
                     # Remove document reference from result
                     result.pop('document', None)
-            
-                    # OPTIMIZATION: Cache results longer for better performance (1 hour for common queries)
-                    if results:
-                        # Cache for 1 hour - knowledge base doesn't change frequently
-                        cache.set(cache_key, results, 3600)
-                        logger.info(f"Found {len(results)} relevant documents (best relevance: {results[0]['relevance']:.3f})")
-                    else:
-                        logger.info("No relevant documents found")
-                        # Cache empty results for shorter time (15 min) to allow for new documents
-                        cache.set(cache_key, [], 900)
-            
+
+            # Cache results (1 hour) when there are hits; empty results cached
+            # shorter (15 min) so new documents can surface sooner. Fail-open:
+            # a down Redis must never crash or empty an otherwise valid search.
+            try:
+                if results:
+                    cache.set(cache_key, results, 3600)
+                    logger.info(f"Found {len(results)} relevant documents (best relevance: {results[0]['relevance']:.3f})")
+                else:
+                    logger.info("No relevant documents found")
+                    cache.set(cache_key, [], 900)
+            except Exception as e:
+                logger.warning(f"RAG cache write failed ({e}); results still returned.")
+
             return results
             
         except Exception as e:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 import os
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
@@ -49,6 +48,12 @@ class EnhancedClaudeService:
     """Enhanced Claude service with hierarchical memory and topic tracking"""
     
     def __init__(self) -> None:
+        # Rate limiting (shared by both providers): Track last request time to
+        # prevent API rate limits. Free tier: 5 req/min = 12s interval, Paid:
+        # 50 req/min = 1.2s interval.
+        self._last_request_time = None
+        self._min_request_interval = float(getattr(settings, 'ANTHROPIC_MIN_REQUEST_INTERVAL', 12))
+
         # Choose the AI provider. Gemini is preferred when a key is configured;
         # otherwise we fall back to Anthropic Claude.
         gemini_key = getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')
@@ -58,6 +63,8 @@ class EnhancedClaudeService:
         self._client = None
         self._gemini_client = None
 
+        # Gemini path: if a Gemini key is configured (and the SDK is installed),
+        # use Gemini and skip Anthropic entirely — no Anthropic key required.
         if gemini_key and GeminiClient is not None:
             try:
                 self._gemini_client = GeminiClient(
@@ -66,9 +73,15 @@ class EnhancedClaudeService:
                 )
                 self._provider = 'gemini'
                 self._model = getattr(settings, 'GEMINI_MODEL', 'gemini-flash-latest')
+                logger.info(
+                    f"EnhancedClaudeService initialized (provider={self._provider}, "
+                    f"model={self._model}) with {self._min_request_interval}s request interval"
+                )
+                return
             except Exception as e:
                 logger.error(f"Failed to initialize Gemini client: {e}. Falling back to Anthropic.")
 
+        # Anthropic path: only reached when Gemini is unavailable or its init failed.
         # Try multiple ways to get the Anthropic API key
         api_key = None
         # Method 1: Check Django settings
@@ -82,15 +95,10 @@ class EnhancedClaudeService:
             api_key = getattr(settings, 'anthropic_api_key', None)
         if not api_key:
             raise RuntimeError(
-                "Anthropic API key not configured. "
-                "Set ANTHROPIC_API_KEY in Django settings or as an environment variable."
+                "No AI provider configured. Set GEMINI_API_KEY (preferred) or "
+                "ANTHROPIC_API_KEY in Django settings or as an environment variable."
             )
         self._client = Anthropic(api_key=api_key)
-
-        # Rate limiting: Track last request time to prevent API rate limits
-        self._last_request_time = None
-        # Free tier: 5 req/min = 12s interval, Paid: 50 req/min = 1.2s interval
-        self._min_request_interval = float(getattr(settings, 'ANTHROPIC_MIN_REQUEST_INTERVAL', 12))
 
         logger.info(
             f"EnhancedClaudeService initialized (provider={self._provider}, "
@@ -155,6 +163,40 @@ class EnhancedClaudeService:
             messages=[{"role": "user", "content": user_content}],
             timeout=timeout_seconds,
         )
+
+    def _call_llm_streaming(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int):
+        """Yield text chunks as they are generated (native streaming).
+
+        Yields strings of text. Caller consumes them in a generator loop.
+        """
+        if self._provider == 'gemini' and self._gemini_client is not None:
+            for chunk in self._gemini_client.models.generate_content_stream(
+                model=self._model,
+                contents=user_content,
+                config=gemini_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=max_tokens,
+                    temperature=0.2,
+                    response_modalities=["TEXT"],
+                ),
+            ):
+                text = getattr(chunk, "text", None) or ""
+                if text:
+                    yield text
+            return
+
+        # Anthropic streaming
+        with self._client.messages.stream(
+            model=self._model,
+            max_tokens=max_tokens,
+            temperature=0.2,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+            timeout=timeout_seconds,
+        ) as stream:
+            for text in stream.text_stream:
+                if text:
+                    yield text
 
     def build_student_context(self, user) -> str:
         """Build comprehensive student context from existing models (Redis-cached)."""
@@ -401,40 +443,14 @@ class EnhancedClaudeService:
             user_message=user_message,
         )
 
-        # JSON output contract (includes durable memory candidates)
-        json_contract = """
-OUTPUT FORMAT (JSON ONLY — no prose outside the JSON):
-{
-  "reply": "Your warm, grounded reply to the student.",
-  "current_topic": "2-4 word topic identifier",
-  "topic_summary": "Brief 1 sentence summary of current topic",
-  "topic_changed": true/false,
-  "personality_notes": "New personal info to remember or null",
-  "instructions": "New user preference to remember or null",
-  "summary": "2-3 sentence conversation summary",
-  "memory_candidates": [
-    {"key": "goal|stressor|preference|running_joke|habit|context",
-     "value": "durable fact the student volunteered about themselves",
-     "confidence": 0.0-1.0}
-  ]
-}
-
-MEMORY CANDIDATE RULES:
-- Only include a candidate when the student volunteered something DURABLE
-  (a goal, a recurring worry, a nickname they like, an inside joke that landed).
-- Do NOT extract: health details, financial hardship, family/relationship
-  specifics, disciplinary history. Only include safe, generally-positive
-  durable facts.
-- Keep the list small (0-2 items). Empty array is fine.
-"""
-
+        # Add grounding / KB instructions
         if rag_context:
             system_prompt += f"""
 STUDENT'S QUESTION: "{user_message}"
 
 YOUR TASK: Answer the question above using the knowledge base information provided. Extract and present the relevant information from the knowledge base directly. Do not give generic responses.
 
-{json_contract}"""
+IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no labels. Just the natural reply text."""
         else:
             system_prompt += f"""
 STUDENT'S QUESTION: "{user_message}"
@@ -443,7 +459,7 @@ YOUR TASK: Respond helpfully, accurately, and specifically. If the answer is
 NOT in the knowledge base or the student's profile, follow the epistemic rules
 above — say what you don't know, and offer to escalate or note the gap.
 
-{json_contract}"""
+IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no labels. Just the natural reply text."""
 
         return system_prompt, user_message
 
@@ -660,6 +676,40 @@ above — say what you don't know, and offer to escalate or note the gap.
 
         return cleaned
 
+    def _infer_topic(self, message: str) -> str:
+        """Infer a 2-4 word topic from the user message (cheap, no LLM)."""
+        lowered = message.lower().strip()
+        topic_keywords = {
+            'registration': ['register', 'enrollment', 'enroll', 'sign up', 'add course', 'drop course'],
+            'exams': ['exam', 'test', 'defer', 'postpone', 'resit'],
+            'timetable': ['schedule', 'timetable', 'class', 'classes', 'today'],
+            'fees': ['fee', 'fees', 'payment', 'pay', 'tuition', 'cost'],
+            'graduation': ['graduate', 'graduation', 'degree', 'certificate'],
+            'accommodation': ['hostel', 'accommodation', 'housing', 'room', 'residence'],
+            'results': ['result', 'results', 'grade', 'gpa', 'transcript'],
+            'courses': ['course', 'unit', 'module', 'credit'],
+            'campus': ['campus', 'building', 'office', 'library', 'lab'],
+            'general': [],
+        }
+        for topic, keywords in topic_keywords.items():
+            if any(kw in lowered for kw in keywords):
+                return topic.title()
+        return "General"
+
+    def _detect_topic_change(self, summary: str | None, new_topic: str) -> bool:
+        """Detect if the topic changed from the previous conversation summary."""
+        if not summary:
+            return True
+        try:
+            data = json.loads(summary)
+            topics = data.get("topics", [])
+            if topics:
+                last_topic = topics[-1].get("topic", "").lower()
+                return last_topic != new_topic.lower()
+        except Exception:
+            pass
+        return False
+
     def _validate_response_quality(self, response_text: str, query: str, rag_context: str = "") -> Dict[str, Any]:
         """Validate response quality and check for potential issues"""
         validation = {
@@ -743,28 +793,37 @@ above — say what you don't know, and offer to escalate or note the gap.
         return validated
 
     def _throttle_request(self, user_id) -> None:
-        """Redis-based per-user rate limiting (no time.sleep)."""
+        """Redis-based per-user rate limiting with burst allowance.
+
+        Allows up to _max_burst requests within the interval window.
+        Only blocks (raises) when the burst limit is exceeded.
+        """
         from django.core.cache import cache
 
+        max_burst = 5  # Allow up to 5 rapid messages before throttling
         cache_key = f"throttle:user:{user_id}"
         count = cache.get(cache_key, 0)
 
-        if count >= 1:
+        if count >= max_burst:
             raise RuntimeError(
                 "You're sending messages too fast. Please wait a moment and try again."
             )
 
+        # Increment counter; TTL sets the sliding window
         cache.set(cache_key, count + 1, timeout=int(self._min_request_interval))
 
     def get_enhanced_response(self, user_message: str, user, conversation, rag_context: str = "", 
-                            navigation_context: str = "") -> EnhancedResponse:
-        """Get response with memory updates and caching"""
+                            navigation_context: str = "", intent_info: dict | None = None) -> EnhancedResponse:
+        """Get response with memory updates and caching.
+
+        *intent_info*: pre-classified intent dict from the caller (views.py).
+        When provided, skips the duplicate classify_query_intent() call.
+        """
 
         # Check cache first for identical queries
         cache_key = self._get_cache_key(user_message, str(conversation.id))
         cached_response = self._get_cached_response(cache_key)
         if cached_response:
-            # Log cache hit for metrics
             logger.info(f"Cache hit for conversation {conversation.id}, user {user.id} - saved API call")
             return cached_response
 
@@ -776,72 +835,59 @@ above — say what you don't know, and offer to escalate or note the gap.
         # Extract personal info from user message first
         personal_info = self._extract_personal_info_from_message(user_message)
         
-        # Classify query intent for better routing
-        intent_info = self.classify_query_intent(user_message)
+        # Use pre-classified intent when available, otherwise classify now
+        if intent_info is None:
+            intent_info = self.classify_query_intent(user_message)
         logger.info(f"Query intent: {intent_info['primary_intent']}, critical: {intent_info['is_critical']}")
         
         system_prompt, formatted_message = self.build_enhanced_prompt(
             user, conversation, user_message, rag_context, personal_info, navigation_context
         )
         
-        # Log the prompt being sent (for debugging)
+        # Log prompt details only when KB context is present (useful for debugging grounding)
         if rag_context:
-            logger.info(f"📤 PROMPT BEING SENT TO AI")
-            logger.info(f"   System prompt length: {len(system_prompt)} chars")
-            logger.info(f"   User prompt: {formatted_message[:100]}...")
-            logger.info(f"   Knowledge base in prompt: {'YES' if rag_context in system_prompt else 'NO'}")
-            # Show a snippet of the system prompt to verify knowledge base is there
-            kb_start = system_prompt.find("KNOWLEDGE BASE")
-            if kb_start != -1:
-                logger.info(f"   Knowledge base starts at position: {kb_start}")
-                logger.info(f"   KB snippet: {system_prompt[kb_start:kb_start+300]}...")
-            else:
-                logger.error(f"   ❌ KNOWLEDGE BASE NOT FOUND IN PROMPT!")
+            logger.info(f"Prompt sent: {len(system_prompt)} chars, KB={len(rag_context)} chars")
         
-        # Call Claude API with timeout handling and retry logic
-        max_retries = 3
-        timeout_seconds = 20  # Reduced from 30 for faster responses
+        # Call AI API — at most 2 attempts, NO sleeping in the request thread.
+        # If the first call fails with a retryable error, try once more immediately.
+        # Non-retryable errors (auth, bad key) fail fast.
+        max_retries = 2
+        timeout_seconds = 20
         resp = None
         last_error = None
 
+        # Token budget: plain text output needs fewer tokens than JSON
+        if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
+            max_tokens = 500
+        elif intent_info.get('primary_intent') == 'navigation':
+            max_tokens = 250
+        else:
+            max_tokens = 400
+
         for attempt in range(max_retries):
             try:
-                # OPTIMIZATION: Use already classified intent instead of re-classifying
-                # Intent was already classified in views.py, but we need it here too
-                # For now, we'll keep it but could pass it as parameter to avoid duplicate work
-                if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
-                    max_tokens = 800  # More tokens for critical/procedure queries
-                elif intent_info.get('primary_intent') == 'navigation':
-                    max_tokens = 400  # Less tokens for simple navigation
-                else:
-                    max_tokens = 600  # Default
-                
                 resp = self._call_llm(
                     system_prompt,
                     formatted_message,
                     max_tokens,
                     timeout_seconds,
                 )
-                break  # Success, exit retry loop
+                break  # Success
 
             except Exception as e:
                 last_error = e
                 error_msg = str(e).lower()
-                print(f"API call attempt {attempt + 1} failed: {error_msg}")
+                logger.warning(f"AI call attempt {attempt + 1}/{max_retries} failed: {error_msg}")
 
-                # Check if it's a timeout or rate limit error that we should retry
-                if attempt < max_retries - 1 and (
-                    "timeout" in error_msg or
-                    "rate limit" in error_msg or
-                    "too many requests" in error_msg or
-                    "429" in error_msg
-                ):
-                    import time
-                    # Exponential backoff: 1s, 2s, 4s
-                    wait_time = (2 ** attempt)
-                    print(f"Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    continue
+                # Only retry on transient errors (timeout, rate limit, 429)
+                is_transient = (
+                    "timeout" in error_msg
+                    or "rate limit" in error_msg
+                    or "too many requests" in error_msg
+                    or "429" in error_msg
+                )
+                if not is_transient or attempt >= max_retries - 1:
+                    break  # Don't sleep, don't retry — fail fast
 
         # Handle failed API calls after all retries
         if resp is None and last_error is not None:
@@ -878,111 +924,59 @@ above — say what you don't know, and offer to escalate or note the gap.
                 topic_summary=None,
             )
         
-        # Extract text
+        # Extract text — LLM now returns plain conversational reply (no JSON)
         text_parts: List[str] = []
         for block in resp.content:
             if getattr(block, "type", "") == "text":
                 text_parts.append(getattr(block, "text", ""))
-        text = "".join(text_parts) or "Sorry, I couldn't generate a response now."
-        
-        parsed = self._extract_json(text)
+        raw_text = "".join(text_parts) or "Sorry, I couldn't generate a response now."
 
-        # Validate and fix response schema
-        if parsed and isinstance(parsed, dict):
-            parsed = self._validate_response_schema(parsed, conversation, text)
+        # Strip any accidental JSON/structured wrapper the model might still produce.
+        # The model is instructed to return plain text, but some models occasionally
+        # wrap output in ```json blocks or similar. Handle the common cases:
+        reply = raw_text.strip()
 
-        # Extract fields with better fallbacks
-        if parsed and isinstance(parsed, dict):
-            # Always extract just the reply field from JSON
-            reply = str(parsed.get("reply", ""))
-            
-            # Log the actual response for debugging
-            logger.info(f"📝 AI RESPONSE RECEIVED")
-            logger.info(f"   Length: {len(reply)} chars")
-            logger.info(f"   Preview: {reply[:150]}...")
-            if rag_context:
-                logger.info(f"   Knowledge base was provided: {len(rag_context)} chars")
-            
-            # Check if reply is generic and knowledge base was provided
-            generic_phrases = [
-                "i'm here to help",
-                "what would you like to know",
-                "how can i help",
-                "i can help you",
-                "feel free to ask",
-                "i'm here as your",
-                "how can i assist"
-            ]
-            reply_lower = reply.lower()
-            is_generic = any(phrase in reply_lower for phrase in generic_phrases) and len(reply.strip()) < 150
-            
-            if is_generic and rag_context and len(rag_context) > 50:
-                logger.error(f"❌ GENERIC RESPONSE DETECTED despite knowledge base being available!")
-                logger.error(f"   Full Reply: '{reply}'")
-                logger.error(f"   RAG context was {len(rag_context)} chars")
-                logger.error(f"   This indicates the AI is ignoring the knowledge base!")
-                # Try to extract useful info from knowledge base as fallback
-                # This shouldn't happen, but if it does, we'll log it
-            
-            # If reply is empty or missing, try to extract from text
-            if not reply or len(reply.strip()) < 3:
-                # Try to find reply in the raw text
-                if "\"reply\":" in text or "'reply':" in text:
-                    # JSON exists but parsing failed, try manual extraction
-                    # Use top-level re import (line 4)
-                    match = re.search(r'"reply"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', text, re.DOTALL)
-                    if match:
-                        reply = match.group(1).replace('\\"', '"').replace('\\n', '\n')
-                    else:
-                        # Use raw text as last resort
-                        reply = text
-                else:
-                    reply = text
-            
-            current_topic = parsed.get("current_topic")
-            topic_summary = parsed.get("topic_summary", "")
-            topic_changed = bool(parsed.get("topic_changed", False))
-            summary = str(parsed.get("summary", conversation.summary or ""))
-            personality_notes = parsed.get("personality_notes")
-            instructions = parsed.get("instructions")
-            memory_candidates = parsed.get("memory_candidates") or []
-            if not isinstance(memory_candidates, list):
-                memory_candidates = []
-        else:
-            # Fallback: use raw text as reply, maintain conversation context
-            reply = text
-            current_topic = "General"
-            topic_summary = "User query and response"
-            topic_changed = False
-            summary = conversation.summary or ""
-            personality_notes = None
-            instructions = None
-            memory_candidates = []
-                
-            # Try to extract personal information from the AI response even if JSON parsing failed
-            if any(keyword in text.lower() for keyword in ["girlfriend", "boyfriend", "wife", "husband", "family", "mother", "father", "sister", "brother", "friend", "relationship", "dating", "married"]):
-                personality_notes = f"Personal info mentioned: {text[:200]}..."
-            elif personal_info:
-                # Use detected personal info from user message
-                personality_notes = f"User shared: {personal_info}"
-        
-        # Ensure reply is clean (no JSON artifacts)
-        # Check if the reply still contains JSON structure
-        reply_stripped = reply.strip()
-        if reply_stripped.startswith('{') and reply_stripped.endswith('}'):
-            # The entire reply is JSON, extract the actual reply text
-            try:
-                json_reply = json.loads(reply_stripped)
-                if isinstance(json_reply, dict) and "reply" in json_reply:
-                    reply = json_reply["reply"]
-                else:
-                    # Fallback to helpful message
-                    reply = "I'm here to help! What would you like to know?"
-            except:
-                reply = "I'm here to help! What would you like to know?"
+        # Remove markdown code fences if present
+        if reply.startswith("```"):
+            # Strip opening fence (```json or ``` etc.)
+            first_newline = reply.find("\n")
+            if first_newline != -1:
+                reply = reply[first_newline + 1:]
+            # Strip closing fence
+            if reply.endswith("```"):
+                reply = reply[:-3].strip()
 
-        # GUARANTEED CLEAN-TEXT FALLBACK (contract: never leak raw JSON to the student)
+        # If the model still returned JSON despite instructions, extract "reply" field
+        if reply.startswith("{") and "reply" in reply:
+            parsed = self._extract_json(reply)
+            if parsed and isinstance(parsed, dict) and "reply" in parsed:
+                reply = str(parsed["reply"])
+            else:
+                # Last resort — just use the raw text
+                reply = raw_text.strip()
+
+        # GUARANTEED CLEAN TEXT — never let raw JSON reach the student
         reply = self._ensure_clean_text(reply)
+
+        # Log the actual response for debugging
+        logger.info(f"AI RESPONSE RECEIVED — length: {len(reply)} chars")
+        if rag_context:
+            logger.info(f"Knowledge base was provided: {len(rag_context)} chars")
+
+        # --- Metadata extraction (heuristic, no LLM call needed) ---
+        current_topic = self._infer_topic(user_message)
+        topic_changed = self._detect_topic_change(conversation.summary, current_topic)
+        topic_summary = user_message[:100]
+
+        # Personal info / instructions — extract from the user message, not from LLM JSON
+        personality_notes = personal_info if personal_info else None
+        instructions = None  # Could be extracted with heuristics if needed
+
+        # Memory candidates — extract durable facts from user message
+        memory_candidates = []
+        durable_facts = self._extract_personal_info_from_message(user_message)
+        if durable_facts:
+            memory_candidates = [{"key": "context", "value": durable_facts, "confidence": 0.6}]
 
         # Validate response quality
         quality_check = self._validate_response_quality(reply, user_message, rag_context)
@@ -1010,39 +1004,37 @@ above — say what you don't know, and offer to escalate or note the gap.
         rate = float(getattr(settings, "USD_TO_TSH_RATE", 2700))
         cost_tsh = round(total_usd * rate, 2)
 
-        # Build hierarchical topic summary when data present
-        def _build_summary(existing: str, topic: Optional[str], t_summary: str, changed: bool) -> str:
-            try:
-                data = json.loads(existing or "{}")
-            except Exception:
-                data = {}
-            topics = data.get("topics", [])
-            if topic or t_summary:
-                if not topics or changed:
-                    topics.append({
-                        "topic": topic or "General",
-                        "summary": t_summary or "",
-                        "message_count": 1,
-                        "started_at": timezone.now().isoformat(),
-                    })
-                else:
-                    cur = topics[-1]
-                    cur["message_count"] = int(cur.get("message_count", 0)) + 1
-                    if t_summary and t_summary not in (cur.get("summary") or ""):
-                        cur["summary"] = f"{cur.get('summary','')} {t_summary}".strip()
-                if len(topics) > 5:
-                    topics = topics[-5:]
-                super_summary = " → ".join([t.get("topic", "?") for t in topics])
-                data = {
-                    "super_summary": super_summary,
-                    "topics": topics,
-                    "total_messages": sum(int(t.get("message_count", 0)) for t in topics),
-                    "last_updated": timezone.now().isoformat(),
-                }
-                return json.dumps(data, ensure_ascii=False)
-            return existing or ""
+        # Build hierarchical topic summary (lightweight, no LLM needed)
+        summary_json = conversation.summary or ""
+        try:
+            data = json.loads(summary_json) if summary_json else {}
+        except Exception:
+            data = {}
+        topics = data.get("topics", [])
 
-        summary_json = _build_summary(summary, current_topic, topic_summary, topic_changed)
+        if current_topic:
+            if not topics or topic_changed:
+                topics.append({
+                    "topic": current_topic,
+                    "summary": topic_summary or "",
+                    "message_count": 1,
+                    "started_at": timezone.now().isoformat(),
+                })
+            else:
+                cur = topics[-1]
+                cur["message_count"] = int(cur.get("message_count", 0)) + 1
+                if topic_summary and topic_summary not in (cur.get("summary") or ""):
+                    cur["summary"] = f"{cur.get('summary','')} {topic_summary}".strip()
+            if len(topics) > 5:
+                topics = topics[-5:]
+            super_summary = " → ".join([t.get("topic", "?") for t in topics])
+            data = {
+                "super_summary": super_summary,
+                "topics": topics,
+                "total_messages": sum(int(t.get("message_count", 0)) for t in topics),
+                "last_updated": timezone.now().isoformat(),
+            }
+            summary_json = json.dumps(data, ensure_ascii=False)
 
         # Create response object
         response = EnhancedResponse(
@@ -1061,11 +1053,135 @@ above — say what you don't know, and offer to escalate or note the gap.
         )
 
         # Cache the response for future use (with intent for better TTL)
-        intent_info = self.classify_query_intent(user_message)
         self._cache_response(cache_key, response, intent_info.get('primary_intent', 'general'))
         logger.info(f"Response cached for conversation {conversation.id}, tokens: {response.tokens_used}")
 
         return response
+
+    def get_enhanced_response_streaming(self, user_message: str, user, conversation,
+                                        rag_context: str = "", navigation_context: str = "",
+                                        intent_info: dict | None = None):
+        """Streaming version — yields text chunks as they're generated.
+
+        Yields dicts with keys:
+          - type='text', content=<chunk>
+          - type='meta', tokens_used=<int>, cost_tsh=<float>, reply=<full text>
+        The final 'meta' event is always yielded last so the caller can persist.
+        """
+        # Check cache first — on hit, emit the cached reply in one chunk
+        cache_key = self._get_cache_key(user_message, str(conversation.id))
+        cached_response = self._get_cached_response(cache_key)
+        if cached_response:
+            logger.info(f"Cache hit (stream) for conversation {conversation.id}")
+            yield {"type": "text", "content": cached_response.text}
+            yield {
+                "type": "meta",
+                "tokens_used": cached_response.tokens_used,
+                "cost_tsh": cached_response.cost_tsh,
+                "reply": cached_response.text,
+            }
+            return
+
+        # Throttle
+        self._throttle_request(user.id)
+
+        personal_info = self._extract_personal_info_from_message(user_message)
+        if intent_info is None:
+            intent_info = self.classify_query_intent(user_message)
+
+        system_prompt, formatted_message = self.build_enhanced_prompt(
+            user, conversation, user_message, rag_context, personal_info, navigation_context
+        )
+
+        # Token budget
+        if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
+            max_tokens = 500
+        elif intent_info.get('primary_intent') == 'navigation':
+            max_tokens = 250
+        else:
+            max_tokens = 400
+
+        full_text = ""
+        try:
+            for chunk in self._call_llm_streaming(system_prompt, formatted_message, max_tokens, 20):
+                full_text += chunk
+                yield {"type": "text", "content": chunk}
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.error(f"Streaming LLM call failed: {error_msg}")
+            fallback = "I'm having trouble connecting right now. Please try again in a moment."
+            yield {"type": "text", "content": fallback}
+            full_text = fallback
+
+        # Ensure clean text
+        full_text = self._ensure_clean_text(full_text)
+
+        # Token usage (approximate for streaming — exact count not always available)
+        input_tokens = 0
+        output_tokens = max(len(full_text.split()) * 1.3, 1)  # rough estimate
+        total_tokens = int(input_tokens + output_tokens)
+        input_usd = input_tokens * float(getattr(settings, "ANTHROPIC_INPUT_USD_PER_TOKEN", 0.00000025))
+        output_usd = output_tokens * float(getattr(settings, "ANTHROPIC_OUTPUT_USD_PER_TOKEN", 0.00000125))
+        rate = float(getattr(settings, "USD_TO_TSH_RATE", 2700))
+        cost_tsh = round((input_usd + output_usd) * rate, 2)
+
+        # Build metadata
+        current_topic = self._infer_topic(user_message)
+        topic_changed = self._detect_topic_change(conversation.summary, current_topic)
+        topic_summary = user_message[:100]
+
+        # Summary
+        summary_json = conversation.summary or ""
+        try:
+            data = json.loads(summary_json) if summary_json else {}
+        except Exception:
+            data = {}
+        topics = data.get("topics", [])
+        if current_topic:
+            if not topics or topic_changed:
+                topics.append({
+                    "topic": current_topic,
+                    "summary": topic_summary,
+                    "message_count": 1,
+                    "started_at": timezone.now().isoformat(),
+                })
+            else:
+                cur = topics[-1]
+                cur["message_count"] = int(cur.get("message_count", 0)) + 1
+            if len(topics) > 5:
+                topics = topics[-5:]
+            super_summary = " → ".join([t.get("topic", "?") for t in topics])
+            data = {
+                "super_summary": super_summary,
+                "topics": topics,
+                "total_messages": sum(int(t.get("message_count", 0)) for t in topics),
+                "last_updated": timezone.now().isoformat(),
+            }
+            summary_json = json.dumps(data, ensure_ascii=False)
+
+        response = EnhancedResponse(
+            text=full_text,
+            tokens_used=total_tokens,
+            input_tokens=input_tokens,
+            output_tokens=int(output_tokens),
+            cost_tsh=cost_tsh,
+            summary=summary_json,
+            personality_notes=personal_info if personal_info else None,
+            instructions=None,
+            current_topic=current_topic,
+            topic_changed=topic_changed,
+            topic_summary=topic_summary,
+            memory_candidates=[{"key": "context", "value": personal_info, "confidence": 0.6}] if personal_info else [],
+        )
+
+        self._cache_response(cache_key, response, intent_info.get('primary_intent', 'general'))
+
+        yield {
+            "type": "meta",
+            "tokens_used": total_tokens,
+            "cost_tsh": cost_tsh,
+            "reply": full_text,
+        }
 
     def _clean_personality_notes(self, notes: str) -> str:
         """Clean and deduplicate personality notes"""

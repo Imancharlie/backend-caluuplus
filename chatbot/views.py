@@ -22,6 +22,25 @@ logger = logging.getLogger(__name__)
 # Alias for clarity - use 're' throughout the file
 re = regex_module
 
+# Singleton services — initialized once, reused across all requests.
+# Eliminates per-request client handshake + model-load overhead.
+_enhanced_service: EnhancedClaudeService | None = None
+_vector_service: VectorSearchService | None = None
+
+
+def get_enhanced_service() -> EnhancedClaudeService:
+    global _enhanced_service
+    if _enhanced_service is None:
+        _enhanced_service = EnhancedClaudeService()
+    return _enhanced_service
+
+
+def get_vector_service() -> VectorSearchService:
+    global _vector_service
+    if _vector_service is None:
+        _vector_service = VectorSearchService()
+    return _vector_service
+
 
 class ChatbotViewSet(viewsets.ModelViewSet):
     queryset = Conversation.objects.all()
@@ -153,9 +172,9 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 content=sanitized_message
             )
 
-        # Initialize services (reused across quick + AI paths)
-        enhanced_service = EnhancedClaudeService()
-        vector_service = VectorSearchService()
+        # Initialize services (module-level singletons, not rebuilt per request)
+        enhanced_service = get_enhanced_service()
+        vector_service = get_vector_service()
 
         quick = None
         ai_response = None
@@ -221,13 +240,14 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.warning(f"RAG/navigation search failed for user {request.user.id}: {str(e)}")
 
-            # LLM call (no DB write inside)
+            # LLM call (no DB write inside) — pass pre-classified intent
             ai_response = enhanced_service.get_enhanced_response(
                 sanitized_message,
                 request.user,
                 conversation,
                 rag_context,
-                navigation_context
+                navigation_context,
+                intent_info=intent_info,
             )
 
             # Update analytics (separate, best-effort)
@@ -356,8 +376,8 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             metadata = {}
 
             try:
-                enhanced_service = EnhancedClaudeService()
-                vector_service = VectorSearchService()
+                enhanced_service = get_enhanced_service()
+                vector_service = get_vector_service()
 
                 # Quick response path — FREE, no token charge
                 message_count = conversation.messages.count()
@@ -412,28 +432,25 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     logger.warning(f"RAG search failed in stream: {e}")
 
-                # LLM call (outside any transaction)
-                ai_response = enhanced_service.get_enhanced_response(
+                # Native streaming — chunks arrive as LLM generates them
+                for event in enhanced_service.get_enhanced_response_streaming(
                     sanitized_message,
                     request.user,
                     conversation,
                     rag_context,
                     navigation_context,
-                )
-
-                full_text = ai_response.text
-
-                # Emit text in chunks for a streaming feel
-                chunk_size = 24
-                for i in range(0, len(full_text), chunk_size):
-                    chunk = full_text[i:i + chunk_size]
-                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                    time.sleep(0.015)
-
-                metadata = {
-                    'tokens_used': ai_response.tokens_used,
-                    'cost_tsh': ai_response.cost_tsh,
-                }
+                    intent_info=intents,
+                ):
+                    if event["type"] == "text":
+                        chunk = event["content"]
+                        full_text += chunk
+                        yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
+                    elif event["type"] == "meta":
+                        metadata = {
+                            'tokens_used': event['tokens_used'],
+                            'cost_tsh': event['cost_tsh'],
+                        }
+                        full_text = event['reply']  # canonical cleaned text
 
                 # Save message (short transaction)
                 with transaction.atomic():
@@ -441,19 +458,30 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         conversation=conversation,
                         role="assistant",
                         content=full_text,
-                        tokens_used=ai_response.tokens_used,
-                        cost_tsh=ai_response.cost_tsh,
+                        tokens_used=metadata.get('tokens_used', 0),
+                        cost_tsh=metadata.get('cost_tsh', 0.0),
                     )
                     conversation.save(update_fields=["updated_at"])
 
                 # Memory updates (best-effort)
                 try:
-                    enhanced_service.update_memory(request.user, conversation, ai_response)
+                    # Reconstruct a minimal EnhancedResponse for memory update
+                    from .enhanced_service import EnhancedResponse
+                    mem_response = EnhancedResponse(
+                        text=full_text,
+                        tokens_used=metadata.get('tokens_used', 0),
+                        input_tokens=0,
+                        output_tokens=metadata.get('tokens_used', 0),
+                        cost_tsh=metadata.get('cost_tsh', 0.0),
+                        summary=conversation.summary or "",
+                        personality_notes=None,
+                        instructions=None,
+                    )
+                    enhanced_service.update_memory(request.user, conversation, mem_response)
                 except Exception as e:
                     logger.error(f"Memory update failed in stream: {e}")
 
                 # LEARNING PIPELINE (Phase 5): capture knowledge gaps for staff review.
-                # Never fails the user's turn — always best-effort.
                 try:
                     from .models import KnowledgeSuggestion, ConversationAnalytics
 
@@ -488,13 +516,12 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                             ),
                         )
 
-                    # Populate the (previously unused) knowledge_gaps metric.
                     if kb_miss or low_confidence:
                         g_analytics, _ = ConversationAnalytics.objects.get_or_create(conversation=conversation)
                         gaps = list(g_analytics.knowledge_gaps or [])
                         gap_entry = {
                             'query': sanitized_message[:200],
-                            'reason': trigger if 'trigger' in locals() else ('no_kb_result' if kb_miss else 'low_confidence'),
+                            'reason': trigger,
                             'at': timezone.now().isoformat(),
                         }
                         if not any(g.get('query', '') == gap_entry['query'] for g in gaps):
@@ -651,7 +678,7 @@ def approve_suggestion(request, pk):
     # (cheap, lazy; no-op if the semantic model is unavailable).
     try:
         from .vector_service import VectorSearchService
-        service = VectorSearchService()
+        service = get_vector_service()
         if service.model is not None:
             service._store_embedding(doc, f"{doc.title}. {doc.content}")
             service.build_index(university_id=university_id)
@@ -788,8 +815,8 @@ def draft_reply(request, pk):
     if not last_user_msg:
         return Response({"detail": "No user message to reply to"}, status=status.HTTP_400_BAD_REQUEST)
 
-    enhanced_service = EnhancedClaudeService()
-    vector_service = VectorSearchService()
+    enhanced_service = get_enhanced_service()
+    vector_service = get_vector_service()
 
     rag_context = ""
     try:
@@ -861,7 +888,7 @@ def quick_chat(request):
     if not message:
         return Response({"detail": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    service = EnhancedClaudeService()
+    service = get_enhanced_service()
     
     # Only use quick response for very simple greeting
     lowered = message.lower()
