@@ -15,12 +15,14 @@ from .views import (
     PlaceViewSet,
     ReportCorrectionViewSet,
     SyncDataView,
+    VenueViewSet,
 )
 
 router = DefaultRouter()
 router.register("campuses", CampusViewSet, basename="map-campus")
 router.register("buildings", BuildingViewSet, basename="map-building")
 router.register("places", PlaceViewSet, basename="map-place")
+router.register("venues", VenueViewSet, basename="map-venue")
 router.register("photos", PhotoViewSet, basename="map-photo")
 router.register("path-nodes", PathNodeViewSet, basename="map-pathnode")
 router.register("path-edges", PathEdgeViewSet, basename="map-pathedge")

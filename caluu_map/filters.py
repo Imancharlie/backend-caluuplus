@@ -12,6 +12,7 @@ from .models import (
     Photo,
     Place,
     ReportCorrection,
+    Venue,
 )
 
 
@@ -63,6 +64,25 @@ class PlaceFilter(django_filters.FilterSet):
         )
 
 
+class VenueFilter(django_filters.FilterSet):
+    campus = django_filters.UUIDFilter(field_name="campus")
+    building = django_filters.UUIDFilter(field_name="building")
+    venue_type = django_filters.CharFilter(field_name="venue_type")
+    is_active = django_filters.BooleanFilter()
+    q = django_filters.CharFilter(method="filter_search")
+
+    class Meta:
+        model = Venue
+        fields = ["campus", "building", "venue_type", "is_active"]
+
+    def filter_search(self, queryset, name, value):
+        return queryset.filter(
+            Q(name__icontains=value)
+            | Q(number__icontains=value)
+            | Q(venue_type__icontains=value)
+        )
+
+
 class PathNodeFilter(django_filters.FilterSet):
     campus = django_filters.UUIDFilter(field_name="campus")
     node_type = django_filters.CharFilter(field_name="node_type")
@@ -89,11 +109,12 @@ class PhotoFilter(django_filters.FilterSet):
     campus = django_filters.UUIDFilter(field_name="campus")
     building = django_filters.UUIDFilter(field_name="building")
     place = django_filters.UUIDFilter(field_name="place")
+    venue = django_filters.UUIDFilter(field_name="venue")
     is_active = django_filters.BooleanFilter()
 
     class Meta:
         model = Photo
-        fields = ["campus", "building", "place", "is_active"]
+        fields = ["campus", "building", "place", "venue", "is_active"]
 
 
 class CampusContributorFilter(django_filters.FilterSet):

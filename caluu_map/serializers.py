@@ -26,6 +26,7 @@ from .models import (
     Place,
     ReportCorrection,
     SyncVersion,
+    Venue,
 )
 from .validators import validate_latitude, validate_longitude
 
@@ -79,6 +80,18 @@ class GeoLocationMixin:
         attrs["longitude"] = lng
         attrs["latitude"] = lat
         return attrs
+
+
+class ModeratedFieldsMixin:
+    """Expose moderation fields on user-submitted content serializers."""
+
+    @extend_schema_field(serializers.CharField)
+    def get_created_by(self, obj):
+        return getattr(obj.created_by, "display_name", None) if obj.created_by else None
+
+    @extend_schema_field(serializers.CharField)
+    def get_reviewed_by(self, obj):
+        return getattr(obj.reviewed_by, "display_name", None) if obj.reviewed_by else None
 
 
 def _photo_summary(obj, request, exclude=False):
@@ -147,12 +160,14 @@ class CampusSerializer(GeoLocationMixin, serializers.ModelSerializer):
         return self._apply_geojson_location(attrs)
 
 
-class BuildingSerializer(GeoLocationMixin, serializers.ModelSerializer):
+class BuildingSerializer(GeoLocationMixin, ModeratedFieldsMixin, serializers.ModelSerializer):
     location = serializers.SerializerMethodField()
     latitude = latitude_field()
     longitude = longitude_field()
     campus_name = serializers.CharField(source="campus.name", read_only=True)
     photos = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
+    reviewed_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Building
@@ -170,11 +185,15 @@ class BuildingSerializer(GeoLocationMixin, serializers.ModelSerializer):
             "address",
             "accessibility_information",
             "photos",
+            "status",
+            "created_by",
+            "reviewed_by",
+            "reviewed_at",
             "is_active",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "status", "created_by", "reviewed_by", "reviewed_at", "created_at", "updated_at"]
 
     @extend_schema_field(serializers.ListField)
     def get_photos(self, obj):
@@ -184,13 +203,15 @@ class BuildingSerializer(GeoLocationMixin, serializers.ModelSerializer):
         return self._apply_geojson_location(attrs)
 
 
-class PlaceSerializer(GeoLocationMixin, serializers.ModelSerializer):
+class PlaceSerializer(GeoLocationMixin, ModeratedFieldsMixin, serializers.ModelSerializer):
     location = serializers.SerializerMethodField()
     latitude = latitude_field()
     longitude = longitude_field()
     campus_name = serializers.CharField(source="campus.name", read_only=True)
     building_name = serializers.CharField(source="building.name", read_only=True, default=None)
     photos = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
+    reviewed_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Place
@@ -211,11 +232,15 @@ class PlaceSerializer(GeoLocationMixin, serializers.ModelSerializer):
             "opening_hours",
             "contact_information",
             "photos",
+            "status",
+            "created_by",
+            "reviewed_by",
+            "reviewed_at",
             "is_active",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "status", "created_by", "reviewed_by", "reviewed_at", "created_at", "updated_at"]
 
     @extend_schema_field(serializers.ListField)
     def get_photos(self, obj):
@@ -232,10 +257,64 @@ class PlaceSerializer(GeoLocationMixin, serializers.ModelSerializer):
         return attrs
 
 
-class PhotoSerializer(serializers.ModelSerializer):
+class VenueSerializer(GeoLocationMixin, ModeratedFieldsMixin, serializers.ModelSerializer):
+    location = serializers.SerializerMethodField()
+    latitude = latitude_field()
+    longitude = longitude_field()
+    campus_name = serializers.CharField(source="campus.name", read_only=True)
+    building_name = serializers.CharField(source="building.name", read_only=True, default=None)
+    photos = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
+    reviewed_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Venue
+        fields = [
+            "id",
+            "campus",
+            "campus_name",
+            "building",
+            "building_name",
+            "name",
+            "number",
+            "venue_type",
+            "description",
+            "floor",
+            "location",
+            "latitude",
+            "longitude",
+            "photos",
+            "status",
+            "created_by",
+            "reviewed_by",
+            "reviewed_at",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "status", "created_by", "reviewed_by", "reviewed_at", "created_at", "updated_at"]
+
+    @extend_schema_field(serializers.ListField)
+    def get_photos(self, obj):
+        return _photo_summary(obj, self.context.get("request"), exclude=self.context.get("exclude_photos", False))
+
+    def validate(self, attrs):
+        attrs = self._apply_geojson_location(attrs)
+        campus = attrs.get("campus")
+        building = attrs.get("building")
+        if campus is not None and building is not None and building.campus_id != campus.id:
+            raise serializers.ValidationError(
+                {"building": "Building must belong to the same campus as the venue."}
+            )
+        return attrs
+
+
+class PhotoSerializer(ModeratedFieldsMixin, serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
     image = serializers.ImageField(write_only=True, required=True)
     uploaded_by_name = serializers.CharField(source="uploaded_by.display_name", read_only=True, default="")
+    created_by = serializers.SerializerMethodField()
+    reviewed_by = serializers.SerializerMethodField()
 
     class Meta:
         model = Photo
@@ -244,16 +323,30 @@ class PhotoSerializer(serializers.ModelSerializer):
             "campus",
             "building",
             "place",
+            "venue",
             "image",
             "url",
             "caption",
             "uploaded_by",
             "uploaded_by_name",
+            "status",
+            "created_by",
+            "reviewed_by",
+            "reviewed_at",
             "is_active",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "uploaded_by", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "status",
+            "uploaded_by",
+            "created_by",
+            "reviewed_by",
+            "reviewed_at",
+            "created_at",
+            "updated_at",
+        ]
 
     @extend_schema_field(serializers.URLField)
     def get_url(self, obj):
@@ -263,23 +356,18 @@ class PhotoSerializer(serializers.ModelSerializer):
         instance = getattr(self, "instance", None)
         building = attrs.get("building", instance.building if instance else None)
         place = attrs.get("place", instance.place if instance else None)
+        venue = attrs.get("venue", instance.venue if instance else None)
         campus = attrs.get("campus", instance.campus if instance else None)
-        if building and place:
+        targets = [t for t in (building, place, venue) if t is not None]
+        if len(targets) != 1:
             raise serializers.ValidationError(
-                {"place": "A photo must belong to either a building OR a place, not both."}
-            )
-        if not building and not place:
-            raise serializers.ValidationError(
-                {"building": "A photo must be attached to a building or a place."}
+                {"place": "A photo must be attached to exactly one of a building, place, or venue."}
             )
         if campus is not None:
-            if building and building.campus_id != campus.id:
+            target = targets[0]
+            if target.campus_id != campus.id:
                 raise serializers.ValidationError(
-                    {"building": "Building does not belong to the provided campus."}
-                )
-            if place and place.campus_id != campus.id:
-                raise serializers.ValidationError(
-                    {"place": "Place does not belong to the provided campus."}
+                    {"campus": "The attached building/place/venue must belong to the provided campus."}
                 )
         return attrs
 

@@ -16,6 +16,7 @@ from .models import (
     ReportCorrection,
     SyncChange,
     SyncVersion,
+    Venue,
 )
 
 
@@ -45,12 +46,21 @@ class PlaceAdmin(admin.ModelAdmin):
     list_select_related = ("campus", "building")
 
 
+@admin.register(Venue)
+class VenueAdmin(admin.ModelAdmin):
+    list_display = ("name", "number", "venue_type", "campus", "building", "floor", "is_active")
+    list_filter = ("venue_type", "is_active", "campus")
+    search_fields = ("name", "number", "venue_type", "campus__name")
+    raw_id_fields = ("building",)
+    list_select_related = ("campus", "building")
+
+
 @admin.register(Photo)
 class PhotoAdmin(admin.ModelAdmin):
     list_display = ("__str__", "campus", "caption", "uploaded_by", "is_active", "created_at")
     list_filter = ("is_active", "campus", "created_at")
     search_fields = ("caption", "campus__name")
-    raw_id_fields = ("building", "place", "uploaded_by")
+    raw_id_fields = ("building", "place", "venue", "uploaded_by")
 
 
 @admin.register(PathNode)

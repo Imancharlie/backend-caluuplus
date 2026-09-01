@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _ENTITY_MODELS = {
     "Building": "building",
     "Place": "place",
+    "Venue": "venue",
     "Photo": "photo",
     "PathNode": "path_node",
     "PathEdge": "path_edge",

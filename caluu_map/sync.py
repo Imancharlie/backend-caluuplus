@@ -6,9 +6,10 @@ The offline-first mobile client uses two flows:
   dataset for a campus plus the current ``sync_version`` cursor.
 * Incremental sync: ``GET api/map/sync/?campus_id=...&since=...`` returns
   only what changed after ``since``, grouped into created / updated /
-  deleted lists. Deactivated rows (``is_active=False``) are reported in the
-  ``deleted`` list with an ``action: "deactivated"`` marker and their payload,
-  so the SQLite client can mark them inactive without losing metadata.
+  deleted lists. Deactivated rows (``is_active=False``) or rows whose
+  ``status`` is not ``approved`` are reported in the ``deleted`` list
+  with appropriate action markers, so the SQLite client can mark them
+  inactive without losing metadata.
 
 Every write bumps a per-campus monotonic version (see ``signals.py``),
 which keeps the response deterministic and free of timestamp-only heuristics.
@@ -26,6 +27,7 @@ def _entity_map():
         "campus": models.Campus,
         "building": models.Building,
         "place": models.Place,
+        "venue": models.Venue,
         "photo": models.Photo,
         "path_node": models.PathNode,
         "path_edge": models.PathEdge,
@@ -34,15 +36,21 @@ def _entity_map():
 
 def empty_changeset():
     return {
-        "created": {"buildings": [], "places": [], "path_nodes": [], "path_edges": [], "photos": []},
-        "updated": {"buildings": [], "places": [], "path_nodes": [], "path_edges": [], "photos": []},
-        "deleted": {"buildings": [], "places": [], "path_nodes": [], "path_edges": [], "photos": []},
+        "created": {"buildings": [], "places": [], "venues": [], "path_nodes": [], "path_edges": [], "photos": []},
+        "updated": {"buildings": [], "places": [], "venues": [], "path_nodes": [], "path_edges": [], "photos": []},
+        "deleted": {"buildings": [], "places": [], "venues": [], "path_nodes": [], "path_edges": [], "photos": []},
     }
 
 
 def _entity_key(entity_type):
-    return {"building": "buildings", "place": "places", "path_node": "path_nodes",
-            "path_edge": "path_edges", "photo": "photos"}.get(entity_type)
+    return {
+        "building": "buildings",
+        "place": "places",
+        "venue": "venues",
+        "path_node": "path_nodes",
+        "path_edge": "path_edges",
+        "photo": "photos",
+    }.get(entity_type)
 
 
 def current_version(campus):
@@ -83,10 +91,9 @@ def record_change(campus_id, entity_type, object_id, action):
 def build_initial_dataset(serializer_context):
     """Serialize the complete dataset for a campus.
 
-    ``serializer_context`` maps a campus instance to
-    ``(CampusSerializer, BuildingSerializer, PlaceSerializer, PathNodeSerializer,
-    PathEdgeSerializer)`` style construction. To keep imports simple the body
-    builds serializers itself.
+    Only ``approved`` rows are included in the public dataset. The author
+    can see their own pending content via the ViewSet querysets (not via
+    this dataset endpoint).
     """
     from . import models
     from .serializers import (
@@ -95,16 +102,20 @@ def build_initial_dataset(serializer_context):
         PathEdgeSerializer,
         PathNodeSerializer,
         PlaceSerializer,
+        VenueSerializer,
     )
 
     campus = serializer_context["campus"]
     request = serializer_context.get("request")
 
     buildings = models.Building.objects.filter(
-        campus=campus, is_active=True
+        campus=campus, is_active=True, status="approved"
     ).select_related("campus").prefetch_related("photos")
     places = models.Place.objects.filter(
-        campus=campus, is_active=True
+        campus=campus, is_active=True, status="approved"
+    ).select_related("campus", "building")
+    venues = models.Venue.objects.filter(
+        campus=campus, is_active=True, status="approved"
     ).select_related("campus", "building")
     nodes = models.PathNode.objects.filter(campus=campus, is_active=True)
     edges = models.PathEdge.objects.filter(campus=campus, is_active=True).select_related(
@@ -117,6 +128,7 @@ def build_initial_dataset(serializer_context):
             buildings, many=True, context={"request": request}
         ).data,
         "places": PlaceSerializer(places, many=True, context={"request": request}).data,
+        "venues": VenueSerializer(venues, many=True, context={"request": request}).data,
         "path_nodes": PathNodeSerializer(nodes, many=True, context={"request": request}).data,
         "path_edges": PathEdgeSerializer(edges, many=True, context={"request": request}).data,
     }
@@ -156,6 +168,14 @@ def changes_since(campus, since):
             groups["deleted"][key].append({"id": str(object_id), "action": "deleted"})
             continue
 
+        # Non-approved content is invisible to public sync clients.
+        status = getattr(obj, "status", None)
+        if status is not None and status != "approved":
+            payload = _serialize(obj, latest.entity_type)
+            action_label = "rejected" if status == "rejected" else "pending"
+            groups["deleted"][key].append({"id": str(object_id), "action": action_label, "object": payload})
+            continue
+
         # Report current state so clients always converge on the truth.
         payload = _serialize(obj, latest.entity_type)
         if not getattr(obj, "is_active", True):
@@ -177,12 +197,14 @@ def _serialize(obj, entity_type):
         PathNodeSerializer,
         PhotoSerializer,
         PlaceSerializer,
+        VenueSerializer,
     )
 
     serializer = {
         "campus": CampusSerializer,
         "building": BuildingSerializer,
         "place": PlaceSerializer,
+        "venue": VenueSerializer,
         "photo": PhotoSerializer,
         "path_node": PathNodeSerializer,
         "path_edge": PathEdgeSerializer,

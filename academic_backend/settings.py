@@ -163,7 +163,10 @@ AUTH_USER_MODEL = 'api.User'
 # Gemini API Key
 # Uses environment variable if set; otherwise falls back to the provided key so you can run without env vars.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "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")
+# Gemini model used by Mr. Caluu. gemini-3.6-flash is fast and reliably
+# available on this API key; newer alias models can be slow/rate-limited.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Pricing configuration 
 # Cost per token in USD for Anthropic Claude (Haiku) – adjust as needed

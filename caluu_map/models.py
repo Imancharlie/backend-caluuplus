@@ -38,6 +38,46 @@ class UUIDModel(models.Model):
         abstract = True
 
 
+class ModeratedModel(UUIDModel):
+    """Adds a moderation/approval lifecycle shared by user-submitted content.
+
+    * ``status`` -- ``pending`` (author-only until approved), ``approved``
+      (visible to everyone) or ``rejected``.
+    * ``created_by`` -- the user who submitted the content.
+    * ``reviewed_by``/``reviewed_at`` -- the approving user + timestamp.
+    """
+
+    STATUSES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    APPROVED_STATUSES = [STATUS_APPROVED]
+
+    status = models.CharField(max_length=20, choices=STATUSES, default=STATUS_PENDING)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        abstract = True
+
+
 class Campus(UUIDModel):
     """A physical campus belonging to an existing Caluu+ University."""
 
@@ -80,7 +120,7 @@ class Campus(UUIDModel):
         return build_point(self.longitude, self.latitude)
 
 
-class Building(UUIDModel):
+class Building(ModeratedModel):
     """A building on a campus."""
 
     campus = models.ForeignKey(
@@ -129,7 +169,7 @@ class Building(UUIDModel):
         return build_point(self.longitude, self.latitude)
 
 
-class Place(UUIDModel):
+class Place(ModeratedModel):
     """A destination or useful point within a campus (office, lab, ATM, ...)."""
 
     PLACE_TYPES = [
@@ -203,8 +243,78 @@ class Place(UUIDModel):
             raise DjangoVE({"building": "Building must belong to the same campus as the place."})
 
 
-class Photo(UUIDModel):
-    """A photo attached to exactly one Building OR one Place."""
+class Venue(ModeratedModel):
+    """A room/space inside a Building (e.g. lecture room A4, lab A21).
+
+    Venues live *inside* buildings (the ``building`` foreign key is required).
+    The campus is resolved from the building so it is always consistent even
+    when a client only supplies ``building``. ``number`` holds the on-door
+    label such as "A4", "A21", "A301" -- distinct from the parent building's
+    ``code`` ("block A"), so a block can contain many numbered rooms.
+    """
+
+    VENUE_TYPES = [
+        ("lecture_room", "Lecture Room"),
+        ("laboratory", "Laboratory"),
+        ("office", "Office"),
+        ("study_room", "Study Room"),
+        ("meeting_room", "Meeting Room"),
+        ("workshop", "Workshop"),
+        ("store", "Store"),
+        ("other", "Other"),
+    ]
+
+    campus = models.ForeignKey(
+        Campus, on_delete=models.CASCADE, related_name="venues"
+    )
+    building = models.ForeignKey(
+        Building, on_delete=models.CASCADE, related_name="venues"
+    )
+    name = models.CharField(max_length=200)
+    number = models.CharField(max_length=50, blank=True, default="")
+    venue_type = models.CharField(max_length=30, choices=VENUE_TYPES, default="other")
+    description = models.TextField(blank=True, default="")
+    floor = models.CharField(max_length=50, blank=True, default="")
+    latitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_latitude]
+    )
+    longitude = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_longitude]
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["building_id", "floor", "number"]
+        indexes = [
+            models.Index(fields=["campus", "is_active"], name="venue_campus_idx"),
+            models.Index(fields=["campus", "latitude", "longitude"], name="venue_point_idx"),
+        ]
+
+    def __str__(self):
+        label = f"{self.number}: {self.name}" if self.number else self.name
+        return f"{label} ({self.building.name})"
+
+    @property
+    def location(self):
+        from .gis import build_point
+
+        return build_point(self.longitude, self.latitude)
+
+    def clean(self):
+        from django.core.exceptions import ValidationError as DjangoVE
+
+        if self.building_id and self.campus_id and self.building.campus_id != self.campus_id:
+            raise DjangoVE(
+                {"building": "Building must belong to the same campus as the venue."}
+            )
+
+
+class Photo(ModeratedModel):
+    """A photo attached to one Building, one Place OR one Venue.
+
+    Many photos may target the same building/place/venue (no uniqueness), which
+    gives every entity an (optional) gallery of images.
+    """
 
     campus = models.ForeignKey(
         Campus, on_delete=models.CASCADE, related_name="photos"
@@ -218,6 +328,13 @@ class Photo(UUIDModel):
     )
     place = models.ForeignKey(
         Place,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="photos",
+    )
+    venue = models.ForeignKey(
+        Venue,
         on_delete=models.CASCADE,
         null=True,
         blank=True,
@@ -246,15 +363,23 @@ class Photo(UUIDModel):
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    models.Q(building__isnull=False, place__isnull=True)
-                    | models.Q(building__isnull=True, place__isnull=False)
+                    models.Q(building__isnull=False, place__isnull=True, venue__isnull=True)
+                    | models.Q(building__isnull=True, place__isnull=False, venue__isnull=True)
+                    | models.Q(building__isnull=True, place__isnull=True, venue__isnull=False)
                 ),
                 name="photo_has_exactly_one_target",
             ),
         ]
 
     def __str__(self):
-        target = self.building_id and f"building:{self.building_id}" or f"place:{self.place_id}"
+        if self.building_id:
+            target = f"building:{self.building_id}"
+        elif self.place_id:
+            target = f"place:{self.place_id}"
+        elif self.venue_id:
+            target = f"venue:{self.venue_id}"
+        else:
+            target = "unattached"
         return f"Photo {target} ({self.caption or 'no caption'})"
 
 

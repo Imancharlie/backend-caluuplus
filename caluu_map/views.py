@@ -15,10 +15,13 @@ Endpoint layout (mounted under ``api/map/``):
 * ``nearby/``                        -- PostGIS-powered nearby query
 """
 
+import logging
 import uuid
 
 from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
+
+logger = logging.getLogger(__name__)
 from drf_spectacular.utils import OpenApiParameter, OpenApiTypes, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -37,6 +40,7 @@ from .filters import (
     PhotoFilter,
     PlaceFilter,
     ReportCorrectionFilter,
+    VenueFilter,
 )
 from .models import (
     Building,
@@ -47,11 +51,13 @@ from .models import (
     Photo,
     Place,
     ReportCorrection,
+    Venue,
 )
 from .permissions import (
     ROLE_CAMPUS_ADMIN,
     ROLE_CONTRIBUTOR,
     ROLE_MODERATOR,
+    IsAuthenticatedForMapEdit,
     IsSuperUser,
     can_manage_campus,
     is_superuser,
@@ -65,6 +71,7 @@ from .serializers import (
     PhotoSerializer,
     PlaceSerializer,
     ReportCorrectionSerializer,
+    VenueSerializer,
 )
 
 
@@ -85,11 +92,16 @@ def _clean_campus(payload):
 class MapContentMixin:
     """Shared behavior for campus-scoped content ViewSets.
 
-    * Reads (GET) are public (AllowAny).
-    * Writes require an authenticated user who is an active contributor
-      (or above) for the target campus.
-    * Hard deletes require a superuser; soft deletion is done via
-      ``PATCH {"is_active": false}``.
+    Post-moderation model (the model the user requested):
+
+    * Reads (GET) are public. Public data only exposes ``approved`` rows.
+    * *Any authenticated user* may create or edit content -- no campus
+      contributor membership is required. New/edited rows are created with
+      ``status='pending'`` and are only ever visible to their author until an
+      approver confirms them.
+    * Approvers (campus_admin / moderator / superuser) can publish content via
+      ``POST .../approve/`` (``status -> 'approved'``) or reject it via
+      ``POST .../reject/`` (``status -> 'rejected'``).
     """
 
     write_role = ROLE_CONTRIBUTOR
@@ -97,7 +109,50 @@ class MapContentMixin:
     def get_permissions(self):
         if self.request and self.request.method in ("GET", "HEAD", "OPTIONS"):
             return [AllowAny()]
-        return [IsAuthenticated()]
+        return [IsAuthenticatedForMapEdit()]
+
+    # ----- visibility scoping -------------------------------------------------
+    def scoped_queryset(self, base_qs):
+        """Restrict reads by moderation status and the requesting user.
+
+        * Anonymous users: approved only.
+        * Approvers (campus_admin/moderator/superuser of that campus): all
+          statuses so they can moderate on both the list and retrieve views.
+        * Everyone else: approved, plus their own rows (pending/rejected) so an
+          author always sees and can continue editing what they submitted.
+        """
+        user = getattr(self.request, "user", None)
+        if user is None or getattr(user, "is_anonymous", True):
+            return base_qs.filter(status="approved")
+        if self._is_approver(self._campus_of_queryset(base_qs)):
+            return base_qs
+        return base_qs.filter(Q(status="approved") | Q(created_by=user))
+
+    def _campus_of_queryset(self, base_qs):
+        """Best-effort campus id referenced by the queryset or request."""
+        params = getattr(self.request, "query_params", None) or {}
+        campus_id = params.get("campus")
+        if campus_id:
+            return campus_id
+        return None
+
+    def _is_approver(self, campus_id):
+        from .permissions import can_moderate
+
+        user = getattr(self.request, "user", None)
+        if user is None or getattr(user, "is_anonymous", True):
+            return False
+        if campus_id is None:
+            # Cannot resolve a campus from the request; only superusers get
+            # the global mod view.
+            from .permissions import is_superuser
+
+            return is_superuser(user)
+        try:
+            campus = Campus.objects.get(pk=campus_id)
+        except (Campus.DoesNotExist, ValueError, TypeError):
+            return False
+        return can_moderate(user, campus)
 
     def default_filter_active(self, queryset):
         if getattr(self, "action", None) != "list":
@@ -107,25 +162,69 @@ class MapContentMixin:
             queryset = queryset.filter(is_active=True)
         return queryset
 
+    # ----- write guards (open submission + moderation) -----------------------
     def guard_create(self, campus):
         if campus is None:
             raise ValidationError({"campus": "A valid campus is required."})
-        if not can_manage_campus(self.request.user, campus, self.write_role):
-            raise PermissionDenied("You must be an active contributor for this campus.")
+        # Any authenticated user may submit; approval happens later.
 
     def guard_update(self, obj):
-        if not can_manage_campus(self.request.user, obj.campus, self.write_role):
-            raise PermissionDenied("You must be an active contributor for this campus.")
+        user = self.request.user
+        if getattr(user, "is_anonymous", True):
+            raise PermissionDenied("You must be logged in to edit map content.")
+        # The author may always keep editing their own row. Approvers may edit
+        # any row. All edits revert to pending so nothing changes publicly
+        # without approval.
+        if not (user == obj.created_by or self._is_approver(obj.campus_id)):
+            raise PermissionDenied(
+                "You may only edit content you created before it is approved. "
+                "Submit a correction report or ask an approver for help."
+            )
+
+    def perform_create(self, serializer):
+        self._force_pending(serializer, set_author=True)
+        super().perform_create(serializer)
+        self._consume_map_tokens()
+
+    def perform_update(self, serializer):
+        # Editing marks the row pending again (unless an approver edited the
+        # approve/reject state directly).
+        self._force_pending(serializer, set_author=False)
+        super().perform_update(serializer)
+
+    def _force_pending(self, serializer, set_author):
+        data = getattr(serializer, "validated_data", {})
+        data["status"] = "pending"
+        if set_author and not getattr(self.request.user, "is_anonymous", True):
+            data["created_by"] = self.request.user
+
+    def _missing_access_message(self, user, campus, min_role):
+        """Keep a diagnostic for any remaining permission denials."""
+        if user is None or getattr(user, "is_anonymous", True):
+            return (
+                "Authentication failed: you must be logged in to modify map content. "
+                "Check that an Authorization Bearer token is being sent."
+            )
+        return (
+            f"Access denied for user '{getattr(user, 'username', user.pk)}' on campus "
+            f"'{getattr(campus, 'name', campus)}'. You can only edit content you "
+            f"created (it stays pending until approved), or content you moderate."
+        )
+
+    def _debug_guard(self, action, user, campus):
+        logger.warning(
+            "MAP %s DENIED user=%s campus=%s path=%s",
+            action.upper(),
+            getattr(user, "username", getattr(user, "pk", None)),
+            getattr(campus, "name", getattr(campus, "pk", None)),
+            self.request.path,
+        )
 
     def guard_destroy(self, obj):
         if not is_superuser(self.request.user):
             raise PermissionDenied(
                 "Hard deletes require a superuser. Use PATCH is_active=false to deactivate."
             )
-
-    def perform_create(self, serializer):
-        super().perform_create(serializer)
-        self._consume_map_tokens()
 
     def _consume_map_tokens(self):
         """Route map-activity consumption through the central token service.
@@ -164,6 +263,57 @@ class MapContentMixin:
         self.guard_destroy(instance)
         self.perform_destroy(instance)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ModerationMixin:
+    """Approve/reject a single content row (campus_admin, moderator, superuser)."""
+
+    moderation_status_field = "status"
+
+    def _resolve_campus(self, obj):
+        return obj.campus if hasattr(obj, "campus") else None
+
+    def approval_action(self, status_value):
+        obj = self.get_object()
+        from .permissions import can_moderate
+
+        campus = self._resolve_campus(obj)
+        if campus is None or not can_moderate(self.request.user, campus):
+            raise PermissionDenied(
+                "Only a campus admin, moderator, or superuser can approve content."
+            )
+        from django.utils import timezone
+
+        setattr(obj, self.moderation_status_field, status_value)
+        obj.reviewed_by = self.request.user
+        obj.reviewed_at = timezone.now()
+        obj.save()
+        # Re-serialize so the caller sees the fresh state.
+        serializer = self.get_serializer(obj)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, *args, **kwargs):
+        return self.approval_action(ModelHelpers.approved_status())
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject(self, request, *args, **kwargs):
+        return self.approval_action(ModelHelpers.rejected_status())
+
+
+class ModelHelpers:
+    @staticmethod
+    def approved_status():
+        from .models import ModeratedModel
+
+        return ModeratedModel.STATUS_APPROVED
+
+    @staticmethod
+    def rejected_status():
+        from .models import ModeratedModel
+
+        return ModeratedModel.STATUS_REJECTED
+
 
 
 class CampusViewSet(viewsets.ModelViewSet):
@@ -239,32 +389,52 @@ class CampusViewSet(viewsets.ModelViewSet):
         return Response(dataset)
 
 
-class BuildingViewSet(MapContentMixin, viewsets.ModelViewSet):
+class BuildingViewSet(MapContentMixin, ModerationMixin, viewsets.ModelViewSet):
     queryset = Building.objects.select_related("campus").prefetch_related("photos")
     serializer_class = BuildingSerializer
     filterset_class = BuildingFilter
     search_fields = ("name", "code", "address")
 
     def get_queryset(self):
-        return self.default_filter_active(super().get_queryset())
+        return self.default_filter_active(self.scoped_queryset(super().get_queryset()))
 
 
-class PlaceViewSet(MapContentMixin, viewsets.ModelViewSet):
+class PlaceViewSet(MapContentMixin, ModerationMixin, viewsets.ModelViewSet):
     queryset = Place.objects.select_related("campus", "building").prefetch_related("photos")
     serializer_class = PlaceSerializer
     filterset_class = PlaceFilter
 
     def get_queryset(self):
-        return self.default_filter_active(super().get_queryset())
+        return self.default_filter_active(self.scoped_queryset(super().get_queryset()))
 
 
-class PhotoViewSet(MapContentMixin, viewsets.ModelViewSet):
-    queryset = Photo.objects.select_related("campus", "building", "place", "uploaded_by")
+class VenueViewSet(MapContentMixin, ModerationMixin, viewsets.ModelViewSet):
+    queryset = Venue.objects.select_related("campus", "building").prefetch_related("photos")
+    serializer_class = VenueSerializer
+    filterset_class = VenueFilter
+    search_fields = ("name", "number", "floor")
+
+    def get_queryset(self):
+        return self.default_filter_active(self.scoped_queryset(super().get_queryset()))
+
+    def create(self, request, *args, **kwargs):
+        campus = _clean_campus(request.data.dict() if hasattr(request.data, "dict") else request.data)
+        if campus is None:
+            building_id = request.data.get("building")
+            if building_id:
+                building = get_object_or_404(Building, pk=str(building_id))
+                campus = building.campus
+        self.guard_create(campus)
+        return super().create(request, *args, **kwargs)
+
+
+class PhotoViewSet(MapContentMixin, ModerationMixin, viewsets.ModelViewSet):
+    queryset = Photo.objects.select_related("campus", "building", "place", "venue", "uploaded_by")
     serializer_class = PhotoSerializer
     filterset_class = PhotoFilter
 
     def get_queryset(self):
-        return self.default_filter_active(super().get_queryset())
+        return self.default_filter_active(self.scoped_queryset(super().get_queryset()))
 
     def create(self, request, *args, **kwargs):
         payload = request.data.dict() if hasattr(request.data, "dict") else {}
@@ -272,14 +442,69 @@ class PhotoViewSet(MapContentMixin, viewsets.ModelViewSet):
         if campus is None:
             building_id = payload.get("building")
             place_id = payload.get("place")
+            venue_id = payload.get("venue")
             if building_id:
                 building = get_object_or_404(Building, pk=str(building_id))
                 campus = building.campus
             elif place_id:
                 place = get_object_or_404(Place, pk=str(place_id))
                 campus = place.campus
+            elif venue_id:
+                venue = get_object_or_404(Venue, pk=str(venue_id))
+                campus = venue.campus
         self.guard_create(campus)
         return super().create(request, *args, **kwargs)
+
+    @action(detail=False, methods=["post"], url_path="bulk")
+    def bulk(self, request, *args, **kwargs):
+        """Upload several photos in one multipart request.
+
+        The request is a multipart form with one or more ``images`` file
+        fields plus a single ``building`` / ``place`` / ``venue`` / ``campus``
+        target. Every image becomes a pending Photo row.
+        """
+        data = request.data
+        images = data.getlist("images") if hasattr(data, "getlist") else []
+        if not images:
+            raise ValidationError({"images": "Provide at least one 'images' file field."})
+
+        building_id = data.get("building")
+        place_id = data.get("place")
+        venue_id = data.get("venue")
+        campus = _clean_campus(request.data.dict() if hasattr(request.data, "dict") else request.data)
+        if campus is None:
+            if building_id:
+                campus = get_object_or_404(Building, pk=str(building_id)).campus
+            elif place_id:
+                campus = get_object_or_404(Place, pk=str(place_id)).campus
+            elif venue_id:
+                campus = get_object_or_404(Venue, pk=str(venue_id)).campus
+        self.guard_create(campus)
+
+        try:
+            building = Building.objects.get(pk=building_id) if building_id else None
+            place = Place.objects.get(pk=place_id) if place_id else None
+            venue = Venue.objects.get(pk=venue_id) if venue_id else None
+        except (Building.DoesNotExist, Place.DoesNotExist, Venue.DoesNotExist):
+            raise ValidationError({"target": "The referenced building/place/venue does not exist."})
+
+        created = []
+        for image in images:
+            ser = PhotoSerializer(
+                data={
+                    "campus": campus.pk if campus else None,
+                    "building": building.pk if building else None,
+                    "place": place.pk if place else None,
+                    "venue": venue.pk if venue else None,
+                    "image": image,
+                    "caption": data.get("caption", ""),
+                },
+                context=self.get_serializer_context(),
+            )
+            ser.is_valid(raise_exception=True)
+            obj = ser.save()
+            created.append(PhotoSerializer(obj, context=self.get_serializer_context()).data)
+        return Response(created, status=status.HTTP_201_CREATED)
 
 
 class PathNodeViewSet(MapContentMixin, viewsets.ModelViewSet):
@@ -486,7 +711,7 @@ class MapSearchView(APIView):
         results = []
         if query:
             buildings = (
-                Building.objects.filter(campus=campus, is_active=True)
+                Building.objects.filter(campus=campus, is_active=True, status="approved")
                 .filter(Q(name__icontains=query) | Q(code__icontains=query) | Q(address__icontains=query))
             )[:25]
             for building in buildings:
@@ -507,7 +732,7 @@ class MapSearchView(APIView):
                 if query.lower() in value.replace("_", " ").lower()
                 or query.lower() in label.lower()
             ]
-            places_q = Place.objects.filter(campus=campus, is_active=True)
+            places_q = Place.objects.filter(campus=campus, is_active=True, status="approved")
             place_match = Q(name__icontains=query) | Q(room_number__icontains=query)
             if type_values:
                 place_match |= Q(type__in=type_values)
@@ -521,6 +746,30 @@ class MapSearchView(APIView):
                         "building_id": str(place.building_id) if place.building_id else None,
                         "campus_id": str(campus.id),
                         "location": gis.build_point(place.longitude, place.latitude),
+                    }
+                )
+
+            venue_type_values = [
+                value
+                for value, label in Venue.VENUE_TYPES
+                if query.lower() in value.replace("_", " ").lower()
+                or query.lower() in label.lower()
+            ]
+            venues_q = Venue.objects.filter(campus=campus, is_active=True, status="approved")
+            venue_match = Q(name__icontains=query) | Q(number__icontains=query)
+            if venue_type_values:
+                venue_match |= Q(venue_type__in=venue_type_values)
+            for venue in venues_q.filter(venue_match)[:25]:
+                results.append(
+                    {
+                        "kind": "venue",
+                        "id": str(venue.id),
+                        "name": venue.name,
+                        "number": venue.number,
+                        "venue_type": venue.venue_type,
+                        "building_id": str(venue.building_id) if venue.building_id else None,
+                        "campus_id": str(campus.id),
+                        "location": gis.build_point(venue.longitude, venue.latitude),
                     }
                 )
 
@@ -566,13 +815,15 @@ class NearbyView(APIView):
 
         campus = _active_campus_or_404(campus_id)
 
-        buildings = Building.objects.filter(campus=campus, is_active=True).select_related("campus")
-        places = Place.objects.filter(campus=campus, is_active=True).select_related("campus", "building")
+        buildings = Building.objects.filter(campus=campus, is_active=True, status="approved").select_related("campus")
+        places = Place.objects.filter(campus=campus, is_active=True, status="approved").select_related("campus", "building")
+        venues = Venue.objects.filter(campus=campus, is_active=True, status="approved").select_related("campus", "building")
 
         building_rows = gis.nearby_objects(buildings, lat, lng, radius_m, limit=50)
         place_rows = gis.nearby_objects(places, lat, lng, radius_m, limit=50)
+        venue_rows = gis.nearby_objects(venues, lat, lng, radius_m, limit=50)
 
-        from .serializers import BuildingSerializer, PlaceSerializer
+        from .serializers import BuildingSerializer, PlaceSerializer, VenueSerializer
 
         context = {"request": request}
         building_data = [
@@ -583,6 +834,10 @@ class NearbyView(APIView):
             {**PlaceSerializer(obj, context=context).data, "distance_m": round(dist, 2)}
             for obj, dist in place_rows
         ]
+        venue_data = [
+            {**VenueSerializer(obj, context=context).data, "distance_m": round(dist, 2)}
+            for obj, dist in venue_rows
+        ]
 
         return Response(
             {
@@ -590,9 +845,10 @@ class NearbyView(APIView):
                 "latitude": lat,
                 "longitude": lng,
                 "radius_m": radius_m,
-                "count": len(building_data) + len(place_data),
+                "count": len(building_data) + len(place_data) + len(venue_data),
                 "buildings": building_data,
                 "places": place_data,
+                "venues": venue_data,
             }
         )
 

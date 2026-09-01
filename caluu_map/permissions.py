@@ -58,6 +58,18 @@ def can_manage_campus(user, campus, min_role=ROLE_CONTRIBUTOR):
     return level is not None and level >= min_role
 
 
+def can_moderate(user, campus):
+    """True when the user may approve/reject content on a campus.
+
+    Approvers are campus admins, moderators, or superusers -- matching the
+    'campus_admin, moderator, or superuser' approval model the caller chose.
+    """
+    if is_superuser(user):
+        return True
+    level = role_level(user, campus)
+    return level is not None and level >= ROLE_MODERATOR
+
+
 def can_manage_campus_objects(user, queryset_or_obj):
     """Check permission against the campus of an object (or queryset)."""
     campus = getattr(queryset_or_obj, "campus", None)
@@ -121,3 +133,26 @@ class IsReadOnly(BasePermission):
 
     def has_permission(self, request, view):
         return request.method in SAFE_METHODS
+
+
+class IsAuthenticatedForMapEdit(BasePermission):
+    """Require a real (non-anonymous) user for map write/management requests.
+
+    Unlike DRF's stock IsAuthenticated this produces a precise, actionable
+    message so the caller can tell "you are not logged in" apart from "you
+    lack contributor rights" (the latter is enforced separately in the
+    per-campus guards with even more detail).
+    """
+
+    message = (
+        "You must be logged in to modify map content. No valid Bearer token "
+        "was attached to the request, or it is missing/expired. Check that "
+        "localStorage contains an 'access_token' and that the Authorization "
+        "header is 'Bearer <token>'."
+    )
+
+    def has_permission(self, request, view):
+        user = getattr(request, "user", None)
+        if user is None or getattr(user, "is_anonymous", True):
+            return False
+        return True

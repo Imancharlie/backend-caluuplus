@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import os
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
@@ -11,6 +12,16 @@ from django.utils import timezone
 import logging
 
 from anthropic import Anthropic
+
+# Gemini (Google) is the preferred AI provider for Mr. Caluu. The SDK is only
+# required when a Gemini API key is configured, so the Anthropic fallback keeps
+# working even if google-genai is not installed.
+try:
+    from google.genai import Client as GeminiClient
+    from google.genai import types as gemini_types
+except Exception:  # pragma: no cover - optional dependency
+    GeminiClient = None
+    gemini_types = None
 
 logger = logging.getLogger(__name__)
 
@@ -37,37 +48,112 @@ class EnhancedClaudeService:
     """Enhanced Claude service with hierarchical memory and topic tracking"""
     
     def __init__(self) -> None:
-        # Try multiple ways to get the API key
-        api_key = None
+        # Choose the AI provider. Gemini is preferred when a key is configured;
+        # otherwise we fall back to Anthropic Claude.
+        gemini_key = getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')
 
+        self._provider = 'anthropic'
+        self._model = "claude-3-haiku-20240307"
+        self._client = None
+        self._gemini_client = None
+
+        if gemini_key and GeminiClient is not None:
+            try:
+                self._gemini_client = GeminiClient(
+                    api_key=gemini_key,
+                    http_options=gemini_types.HttpOptions(timeout=45000),
+                )
+                self._provider = 'gemini'
+                self._model = getattr(settings, 'GEMINI_MODEL', 'gemini-flash-latest')
+            except Exception as e:
+                logger.error(f"Failed to initialize Gemini client: {e}. Falling back to Anthropic.")
+
+        # Try multiple ways to get the Anthropic API key
+        api_key = None
         # Method 1: Check Django settings
         if hasattr(settings, 'ANTHROPIC_API_KEY'):
             api_key = getattr(settings, 'ANTHROPIC_API_KEY', None)
-
         # Method 2: Check environment variable
         if not api_key:
-            import os
             api_key = os.getenv('ANTHROPIC_API_KEY')
-
         # Method 3: Check settings with different case
         if not api_key and hasattr(settings, 'anthropic_api_key'):
             api_key = getattr(settings, 'anthropic_api_key', None)
-
         if not api_key:
             raise RuntimeError(
                 "Anthropic API key not configured. "
                 "Set ANTHROPIC_API_KEY in Django settings or as an environment variable."
             )
-
-        self._model = "claude-3-haiku-20240307"
         self._client = Anthropic(api_key=api_key)
-        
+
         # Rate limiting: Track last request time to prevent API rate limits
         self._last_request_time = None
         # Free tier: 5 req/min = 12s interval, Paid: 50 req/min = 1.2s interval
         self._min_request_interval = float(getattr(settings, 'ANTHROPIC_MIN_REQUEST_INTERVAL', 12))
-        
-        logger.info(f"EnhancedClaudeService initialized with {self._min_request_interval}s request interval")
+
+        logger.info(
+            f"EnhancedClaudeService initialized (provider={self._provider}, "
+            f"model={self._model}) with {self._min_request_interval}s request interval"
+        )
+
+    def _call_llm(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int):
+        """Dispatch a chat completion to the active provider (Gemini or Anthropic).
+
+        Returns an object with ``.content`` (a list of ``{type, text}`` blocks)
+        and ``.usage`` (``input_tokens`` / ``output_tokens``) so the rest of the
+        pipeline is provider-agnostic.
+        """
+        if self._provider == 'gemini' and self._gemini_client is not None:
+            resp = self._gemini_client.models.generate_content(
+                model=self._model,
+                contents=user_content,
+                config=gemini_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    max_output_tokens=max_tokens,
+                    temperature=0.2,
+                    response_modalities=["TEXT"],
+                ),
+            )
+
+            class _Usage:
+                def __init__(self, p, o):
+                    self.input_tokens = int(p)
+                    self.output_tokens = int(o)
+
+            try:
+                text = (resp.text or "").strip()
+            except Exception:
+                text = ""
+            usage_meta = getattr(resp, "usage_metadata", None)
+            try:
+                input_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0)
+                output_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0)
+            except Exception:
+                input_tokens = 0
+                output_tokens = 0
+
+            class _Block:
+                def __init__(self, t):
+                    self.type = "text"
+                    self.text = t
+
+            class _Resp:
+                pass
+
+            unified = _Resp()
+            unified.content = [_Block(text)] if text else []
+            unified.usage = _Usage(input_tokens, output_tokens)
+            return unified
+
+        # Default: Anthropic Claude
+        return self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            temperature=0.2,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_content}],
+            timeout=timeout_seconds,
+        )
 
     def build_student_context(self, user) -> str:
         """Build comprehensive student context from existing models"""
@@ -653,16 +739,11 @@ IMPORTANT RULES:
                 else:
                     max_tokens = 600  # Default
                 
-                resp = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=max_tokens,
-                    temperature=0.2,
-                    system=system_prompt,
-                    messages=[{
-                        "role": "user",
-                        "content": formatted_message
-                    }],
-                    timeout=timeout_seconds
+                resp = self._call_llm(
+                    system_prompt,
+                    formatted_message,
+                    max_tokens,
+                    timeout_seconds,
                 )
                 break  # Success, exit retry loop
 
