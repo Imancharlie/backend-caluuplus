@@ -42,6 +42,7 @@ class EnhancedResponse:
     current_topic: Optional[str] = None
     topic_changed: bool = False
     topic_summary: Optional[str] = None
+    memory_candidates: Optional[List[Dict]] = None
 
 
 class EnhancedClaudeService:
@@ -156,7 +157,13 @@ class EnhancedClaudeService:
         )
 
     def build_student_context(self, user) -> str:
-        """Build comprehensive student context from existing models"""
+        """Build comprehensive student context from existing models (Redis-cached)."""
+        from django.core.cache import cache
+        cache_key = f"student_ctx:{user.id}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         lines: List[str] = []
         student: Student | None = getattr(user, "student_profile", None)
         if student:
@@ -217,7 +224,9 @@ class EnhancedClaudeService:
         unread = Notification.objects.filter(user=user, is_read=False).count()
         if unread:
             lines.append(f"Unread notifications: {unread}")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        cache.set(cache_key, result, timeout=300)  # 5 min TTL
+        return result
 
     def _format_recent_messages(self, messages) -> str:
         """Format last few messages for context - optimized to reduce tokens"""
@@ -348,132 +357,180 @@ class EnhancedClaudeService:
 
     def build_enhanced_prompt(self, user, conversation, user_message: str, rag_context: str = "", 
                              personal_info: str = "", navigation_context: str = "") -> Tuple[str, str]:
-        """Build comprehensive prompt with hierarchical memory, personalization, and academic advisor persona"""
-        
+        """Build comprehensive prompt using the persona module (tone + epistemic layers)."""
+
         # Get or create ChatHistory
         chat_history, _ = ChatHistory.objects.get_or_create(user=user)
-        
+
         # Get last 2 message pairs for immediate context
         recent_messages = conversation.messages.order_by('-timestamp')[:4]
         recent_context = self._format_recent_messages(recent_messages)
-        
-        # Build student context
+
+        # Build student context (Redis-cached)
         student_context = self.build_student_context(user)
-        
+
+        # Personal memories (StudentMemory — Redis-cached)
+        personal_memories = self._get_personal_memories(user)
+
         # Topics from hierarchical summary
         topics = self._parse_topic_segments(conversation.summary)
         topics_formatted = self._format_topic_segments(topics)
 
-        # Format RAG context - put it FIRST and make it impossible to ignore
-        if rag_context:
-            # Put knowledge base at the very top of the prompt
-            rag_section = f"""
-╔═══════════════════════════════════════════════════════════════╗
-║                    KNOWLEDGE BASE - REQUIRED                  ║
-║         YOU MUST USE THIS INFORMATION TO ANSWER               ║
-╚═══════════════════════════════════════════════════════════════╝
+        # Phase 8: include per-conversation uploaded documents (ephemeral, student-only)
+        try:
+            conv_docs = conversation.documents.filter(is_processed=True)
+            if conv_docs.exists():
+                doc_sections = []
+                for doc in conv_docs[:3]:
+                    doc_sections.append(
+                        f"UPLOADED DOCUMENT ({doc.filename}):\n{doc.extracted_text[:1200]}"
+                    )
+                if doc_sections:
+                    rag_context = (rag_context + "\n\n" + "\n\n".join(doc_sections)).strip()
+        except Exception:
+            pass
 
-{rag_context}
+        from .persona import format_persona_prompt
+        system_prompt = format_persona_prompt(
+            student_context=student_context,
+            personal_memories=personal_memories,
+            rag_context=rag_context,
+            navigation_context=navigation_context,
+            recent_messages=recent_context,
+            topics=topics_formatted,
+            user_message=user_message,
+        )
 
-╔═══════════════════════════════════════════════════════════════╗
-║                    CRITICAL: READ THIS                        ║
-╚═══════════════════════════════════════════════════════════════╝
+        # JSON output contract (includes durable memory candidates)
+        json_contract = """
+OUTPUT FORMAT (JSON ONLY — no prose outside the JSON):
+{
+  "reply": "Your warm, grounded reply to the student.",
+  "current_topic": "2-4 word topic identifier",
+  "topic_summary": "Brief 1 sentence summary of current topic",
+  "topic_changed": true/false,
+  "personality_notes": "New personal info to remember or null",
+  "instructions": "New user preference to remember or null",
+  "summary": "2-3 sentence conversation summary",
+  "memory_candidates": [
+    {"key": "goal|stressor|preference|running_joke|habit|context",
+     "value": "durable fact the student volunteered about themselves",
+     "confidence": 0.0-1.0}
+  ]
+}
 
-The knowledge base above contains the EXACT answer to the student's question.
-Your response MUST be based on this knowledge base content.
-
-FORBIDDEN RESPONSES (DO NOT USE THESE):
-- "I'm here to help! What would you like to know?"
-- "How can I help you today?"
-- "I can help you with that!"
-- Any generic greeting or offer to help
-
-REQUIRED: Extract the relevant information from the knowledge base and present it directly to the student.
+MEMORY CANDIDATE RULES:
+- Only include a candidate when the student volunteered something DURABLE
+  (a goal, a recurring worry, a nickname they like, an inside joke that landed).
+- Do NOT extract: health details, financial hardship, family/relationship
+  specifics, disciplinary history. Only include safe, generally-positive
+  durable facts.
+- Keep the list small (0-2 items). Empty array is fine.
 """
-        else:
-            rag_section = ""
-        
-        nav_section = f"\nNAVIGATION:\n{navigation_context}\n" if navigation_context else ""
-        
-        # Put knowledge base FIRST, then persona
+
         if rag_context:
-            system_prompt = f"""{rag_section}
-
-You are MR CALUU, an intelligent academic advisor and trusted friend to university students.
-
+            system_prompt += f"""
 STUDENT'S QUESTION: "{user_message}"
 
-YOUR TASK: Answer the question above using the knowledge base information provided. Extract and present the relevant information from the knowledge base.
+YOUR TASK: Answer the question above using the knowledge base information provided. Extract and present the relevant information from the knowledge base directly. Do not give generic responses.
 
-STUDENT PROFILE:
-{student_context}
-
-PERSONAL CONTEXT:
-Personality Notes: {chat_history.personality_notes or 'None'}
-User Preferences: {chat_history.instructions or 'None'}
-New Information: {personal_info or 'None'}
-
-CONVERSATION CONTEXT:
-Recent Topics: {topics_formatted}
-Recent Messages: {recent_context}
-{nav_section}
-RESPONSE FORMAT (JSON ONLY):
-{{
-  "reply": "Your response based on the knowledge base. Extract information from the knowledge base and present it clearly. For procedures, list the steps. DO NOT give generic responses.",
-  "current_topic": "2-4 word topic identifier",
-  "topic_summary": "Brief 1 sentence summary of current topic",
-  "topic_changed": boolean,
-  "personality_notes": "New personal information to remember|null",
-  "instructions": "New user preferences to remember|null",
-  "summary": "2-3 sentence conversation summary"
-}}
-
-CRITICAL RULES:
-1. Your reply MUST use the knowledge base information provided above
-2. Extract and present the information from the knowledge base
-3. DO NOT give generic responses - use the knowledge base content
-4. Answer the specific question: "{user_message}"
-5. Always respond in JSON format only"""
+{json_contract}"""
         else:
-            # No knowledge base - use normal prompt
-            system_prompt = f"""You are MR CALUU, an intelligent academic advisor and trusted friend to university students. You are knowledgeable, supportive, professional yet friendly, and deeply familiar with university regulations, procedures, and academic life.
+            system_prompt += f"""
+STUDENT'S QUESTION: "{user_message}"
 
-YOUR ROLE:
-- Academic advisor providing guidance on university regulations, procedures, and policies
-- Navigation assistant helping students find features and pages in Caluu+
-- Academic supervisor offering study advice and course guidance
-- Trusted source of information about university life, rules, and procedures
-- Friendly companion who remembers student preferences and personal context
+YOUR TASK: Respond helpfully, accurately, and specifically. If the answer is
+NOT in the knowledge base or the student's profile, follow the epistemic rules
+above — say what you don't know, and offer to escalate or note the gap.
 
-STUDENT PROFILE:
-{student_context}
+{json_contract}"""
 
-PERSONAL CONTEXT:
-Personality Notes: {chat_history.personality_notes or 'None'}
-User Preferences: {chat_history.instructions or 'None'}
-New Information: {personal_info or 'None'}
-
-CONVERSATION CONTEXT:
-Recent Topics: {topics_formatted}
-Recent Messages: {recent_context}
-{nav_section}
-RESPONSE FORMAT (JSON ONLY):
-{{
-  "reply": "Your response to the student. Be helpful, accurate, and specific.",
-  "current_topic": "2-4 word topic identifier",
-  "topic_summary": "Brief 1 sentence summary of current topic",
-  "topic_changed": boolean,
-  "personality_notes": "New personal information to remember|null",
-  "instructions": "New user preferences to remember|null",
-  "summary": "2-3 sentence conversation summary"
-}}
-
-IMPORTANT RULES:
-1. Always respond in JSON format only
-2. Be professional yet warm and supportive
-3. If you don't know something, admit it and suggest where to find the information"""
-        
         return system_prompt, user_message
+
+    def _get_personal_memories(self, user) -> str:
+        """Get top personal memories for this student, injected into prompt (Redis-cached)."""
+        from django.core.cache import cache
+        cache_key = f"personal_mem:{user.id}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            from .models import StudentMemory
+            memories = StudentMemory.objects.filter(
+                student__user=user, is_active=True
+            ).order_by('-confidence', '-last_referenced_at')[:5]
+
+            if not memories.exists():
+                cache.set(cache_key, "", timeout=300)
+                return ""
+
+            lines = []
+            for m in memories:
+                lines.append(f"- {m.key}: {m.value}")
+            result = "\n".join(lines)
+            cache.set(cache_key, result, timeout=300)
+            return result
+        except Exception:
+            return ""
+
+    def _process_memory_candidates(self, user, message_obj, candidates) -> None:
+        """Extract and store durable personal memories from conversation turns.
+
+        Sensitive categories are filtered out by memory_utils.should_store_memory —
+        never auto-store health/financial/family/disciplinary details.
+        """
+        from .models import StudentMemory
+        from .memory_utils import should_store_memory
+
+        student = getattr(user, 'student_profile', None)
+        if not student:
+            return
+
+        if not candidates:
+            return
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            key = candidate.get('key', 'context')
+            value = candidate.get('value', '')
+            confidence = float(candidate.get('confidence', 0.5))
+
+            if not value or not value.strip():
+                continue
+            if not should_store_memory(key, value):
+                logger.info(f"Skipping sensitive memory candidate for user {user.id}: key={key}")
+                continue
+
+            # Dedup: if a similar active memory exists, reinforce it
+            existing = StudentMemory.objects.filter(
+                student=student, key=key, is_active=True
+            ).first()
+            if existing:
+                existing_val = existing.value.lower()
+                new_val = value.lower()
+                if new_val in existing_val or existing_val in new_val:
+                    existing.confidence = min(existing.confidence + 0.1, 1.0)
+                    existing.save(update_fields=['confidence', 'last_referenced_at'])
+                    continue
+
+            StudentMemory.objects.create(
+                student=student,
+                key=key,
+                value=value.strip(),
+                confidence=confidence,
+                source_message=message_obj,
+            )
+            logger.info(f"Stored memory for user {user.id}: {key}")
+
+        # Invalidate personal memory cache so next turn reflects new memories
+        try:
+            from django.core.cache import cache
+            cache.delete(f"personal_mem:{user.id}")
+        except Exception:
+            pass
+
 
     def _get_cache_key(self, user_message: str, conversation_id: str) -> str:
         """Generate cache key for response caching"""
@@ -576,6 +633,33 @@ IMPORTANT RULES:
                             break
         return {}
 
+    def _ensure_clean_text(self, text: str) -> str:
+        """Guarantee the reply is never raw JSON — always human-readable text."""
+        if not text or not text.strip():
+            return "I'm having a little trouble finding the right words. Could you rephrase that?"
+
+        stripped = text.strip()
+
+        # If it starts with { it's likely JSON leaked through
+        if stripped.startswith('{') and '}' in stripped:
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, dict) and 'reply' in parsed:
+                    return str(parsed['reply'])
+                return "I'm having a little trouble with my response. Could you try again?"
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Remove any remaining JSON artifacts
+        cleaned = re.sub(r'^[\{\[].*?"reply"\s*:\s*"', '', stripped)
+        cleaned = re.sub(r'",?\s*"current_topic".*[\}\]]$', '', cleaned)
+        cleaned = cleaned.strip()
+
+        if not cleaned or len(cleaned) < 3:
+            return "I'm having a little trouble with my response. Could you try again?"
+
+        return cleaned
+
     def _validate_response_quality(self, response_text: str, query: str, rag_context: str = "") -> Dict[str, Any]:
         """Validate response quality and check for potential issues"""
         validation = {
@@ -659,25 +743,18 @@ IMPORTANT RULES:
         return validated
 
     def _throttle_request(self, user_id) -> None:
-        """Throttle API requests to respect rate limits with per-user tracking"""
-        # Use per-user throttling instead of global throttling
-        # This allows multiple users to use the chatbot simultaneously
+        """Redis-based per-user rate limiting (no time.sleep)."""
         from django.core.cache import cache
-        
-        cache_key = f"last_request_user_{user_id}"
-        last_request = cache.get(cache_key)
-        
-        if last_request:
-            elapsed = (datetime.now() - datetime.fromisoformat(last_request)).total_seconds()
-            if elapsed < self._min_request_interval:
-                wait_time = self._min_request_interval - elapsed
-                # OPTIMIZATION: Only throttle if wait time is significant (> 0.3s instead of 0.5s)
-                if wait_time > 0.3:
-                    logger.info(f"Throttling request for user {user_id}, waiting {wait_time:.1f}s to respect rate limits")
-                    time.sleep(wait_time)
-        
-        # Store the request time for this user (expires after interval + buffer)
-        cache.set(cache_key, datetime.now().isoformat(), self._min_request_interval + 5)
+
+        cache_key = f"throttle:user:{user_id}"
+        count = cache.get(cache_key, 0)
+
+        if count >= 1:
+            raise RuntimeError(
+                "You're sending messages too fast. Please wait a moment and try again."
+            )
+
+        cache.set(cache_key, count + 1, timeout=int(self._min_request_interval))
 
     def get_enhanced_response(self, user_message: str, user, conversation, rag_context: str = "", 
                             navigation_context: str = "") -> EnhancedResponse:
@@ -868,6 +945,9 @@ IMPORTANT RULES:
             summary = str(parsed.get("summary", conversation.summary or ""))
             personality_notes = parsed.get("personality_notes")
             instructions = parsed.get("instructions")
+            memory_candidates = parsed.get("memory_candidates") or []
+            if not isinstance(memory_candidates, list):
+                memory_candidates = []
         else:
             # Fallback: use raw text as reply, maintain conversation context
             reply = text
@@ -877,6 +957,7 @@ IMPORTANT RULES:
             summary = conversation.summary or ""
             personality_notes = None
             instructions = None
+            memory_candidates = []
                 
             # Try to extract personal information from the AI response even if JSON parsing failed
             if any(keyword in text.lower() for keyword in ["girlfriend", "boyfriend", "wife", "husband", "family", "mother", "father", "sister", "brother", "friend", "relationship", "dating", "married"]):
@@ -899,12 +980,10 @@ IMPORTANT RULES:
                     reply = "I'm here to help! What would you like to know?"
             except:
                 reply = "I'm here to help! What would you like to know?"
-        
-        # Remove any leading/trailing JSON markers that might have slipped through
-        reply = re.sub(r'^[\{\[].*?"reply"\s*:\s*"', '', reply)
-        reply = re.sub(r'",?\s*"current_topic".*[\}\]]$', '', reply)
-        reply = reply.strip()
-        
+
+        # GUARANTEED CLEAN-TEXT FALLBACK (contract: never leak raw JSON to the student)
+        reply = self._ensure_clean_text(reply)
+
         # Validate response quality
         quality_check = self._validate_response_quality(reply, user_message, rag_context)
         if quality_check['warnings']:
@@ -978,6 +1057,7 @@ IMPORTANT RULES:
             current_topic=current_topic,
             topic_changed=topic_changed,
             topic_summary=topic_summary,
+            memory_candidates=memory_candidates,
         )
 
         # Cache the response for future use (with intent for better TTL)

@@ -8,15 +8,16 @@ import csv
 import json
 from .models import (
     Conversation, Message, ChatHistory, KnowledgeDocument,
-    SiteNavigation, Feedback, ConversationAnalytics
+    SiteNavigation, Feedback, ConversationAnalytics,
+    StudentMemory, KnowledgeSuggestion, ConversationDocument, ConversationAttachment
 )
 from api.models import University
 
 
 @admin.register(Conversation)
 class ConversationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'user', 'title', 'is_active', 'created_at', 'updated_at', 'message_count']
-    list_filter = ['is_active', 'created_at', 'updated_at']
+    list_display = ['id', 'user', 'title', 'mode', 'is_active', 'created_at', 'updated_at', 'message_count']
+    list_filter = ['is_active', 'mode', 'created_at', 'updated_at']
     search_fields = ['user__display_name', 'user__email', 'title']
     readonly_fields = ['id', 'created_at', 'updated_at', 'message_count']
     ordering = ['-updated_at']
@@ -316,3 +317,50 @@ class ConversationAnalyticsAdmin(admin.ModelAdmin):
         # Add link to bulk import
         extra_context['bulk_import_url'] = 'bulk-import/'
         return super().changelist_view(request, extra_context=extra_context)
+
+
+@admin.register(StudentMemory)
+class StudentMemoryAdmin(admin.ModelAdmin):
+    list_display = ['student', 'key', 'value', 'confidence', 'is_active', 'created_at', 'last_referenced_at']
+    list_filter = ['key', 'is_active']
+    search_fields = ['value', 'student__user__display_name']
+    readonly_fields = ['id', 'created_at', 'last_referenced_at']
+
+
+@admin.register(KnowledgeSuggestion)
+class KnowledgeSuggestionAdmin(admin.ModelAdmin):
+    list_display = ['trigger', 'query_text', 'confidence_score', 'status', 'created_at']
+    list_filter = ['status', 'trigger']
+    search_fields = ['query_text']
+    readonly_fields = ['id', 'query_hash', 'created_at']
+    actions = ['approve_selected']
+
+    def approve_selected(self, request, queryset):
+        from django.utils import timezone
+        from .models import KnowledgeDocument
+        for s in queryset.filter(status='pending'):
+            s.status = 'approved'
+            s.reviewed_by = request.user
+            s.reviewed_at = timezone.now()
+            s.save()
+            KnowledgeDocument.objects.create(
+                title=s.query_text[:100],
+                content=s.response_text,
+                category='faq',
+            )
+        self.message_user(request, f"Approved {queryset.count()} suggestions and created knowledge documents.")
+    approve_selected.short_description = "Approve selected and create knowledge documents"
+
+
+@admin.register(ConversationDocument)
+class ConversationDocumentAdmin(admin.ModelAdmin):
+    list_display = ['conversation', 'filename', 'attachment_type', 'is_processed', 'created_at']
+    list_filter = ['attachment_type', 'is_processed']
+    search_fields = ['filename']
+    readonly_fields = ['id', 'created_at']
+
+
+@admin.register(ConversationAttachment)
+class ConversationAttachmentAdmin(admin.ModelAdmin):
+    list_display = ['conversation', 'attachment_type', 'created_at']
+    list_filter = ['attachment_type']

@@ -3308,8 +3308,8 @@ def article_list(request):
     return Response({
         'results': article_data,
         'count': articles.count(),
-        'next': f'http://127.0.0.1:8000/api/articles/?page={page + 1}' if end < articles.count() else None,
-        'previous': f'http://127.0.0.1:8000/api/articles/?page={page - 1}' if page > 1 else None,
+        'next': request.build_absolute_uri(f'/api/articles/?page={page + 1}') if end < articles.count() else None,
+        'previous': request.build_absolute_uri(f'/api/articles/?page={page - 1}') if page > 1 else None,
         'filters': {
             'category': category,
             'sort_by': sort_by

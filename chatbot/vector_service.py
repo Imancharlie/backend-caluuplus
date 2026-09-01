@@ -113,6 +113,63 @@ class VectorSearchService:
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
             return None
+
+    def _encode(self, text: str):
+        """Encode a single text to a float32 numpy vector (no cache)."""
+        if self.model is None or not NUMPY_AVAILABLE:
+            return None
+        try:
+            text = (text or "").strip()[:512]
+            if not text:
+                return None
+            return self.model.encode(text, convert_to_numpy=True, show_progress_bar=False)
+        except Exception as e:
+            logger.error(f"Error encoding text: {e}")
+            return None
+
+    def _store_embedding(self, doc, text: str) -> bool:
+        """Precompute and persist a document's embedding (float32 bytes)."""
+        from django.db import transaction
+        if doc is None or not hasattr(doc, 'embedding'):
+            return False
+        vec = self._encode(text)
+        if vec is None:
+            return False
+        try:
+            with transaction.atomic():
+                KnowledgeDocument = type(doc)
+                KnowledgeDocument.objects.filter(id=doc.id).update(
+                    embedding=vec.astype('float32').tobytes()
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Error storing embedding for doc {getattr(doc, 'id', '?')}: {e}")
+            return False
+
+    def _load_embedding(self, doc) -> Optional[np.ndarray]:
+        """Load a precomputed stored embedding for a KnowledgeDocument, if any."""
+        if not NUMPY_AVAILABLE or np is None:
+            return None
+        raw = getattr(doc, 'embedding', None)
+        if not raw:
+            return None
+        try:
+            return np.frombuffer(raw, dtype='float32')
+        except Exception:
+            return None
+
+    def _cosine(self, q_vec, d_vec) -> float:
+        """Cosine similarity between two numpy vectors."""
+        if q_vec is None or d_vec is None or NUMPY_AVAILABLE is False or np is None:
+            return 0.0
+        try:
+            qn = float(np.linalg.norm(q_vec))
+            dn = float(np.linalg.norm(d_vec))
+            if qn == 0.0 or dn == 0.0:
+                return 0.0
+            return float(np.dot(q_vec, d_vec) / (qn * dn))
+        except Exception:
+            return 0.0
     
     def _categorize_query(self, query: str) -> List[str]:
         """Categorize query to determine relevant document types"""
@@ -202,18 +259,37 @@ class VectorSearchService:
         return score
     
     def build_index(self, university_id: Optional[int] = None) -> bool:
-        """Build or load vector index for knowledge documents"""
+        """Build and persist document embeddings for vector retrieval.
+
+        Precomputes and stores embeddings for all active KnowledgeDocuments
+        (optionally scoped to one university). Idempotent — re-runs cheaply.
+        Returns True if any documents were indexed.
+        """
         try:
             from .models import KnowledgeDocument
-            
+
             queryset = KnowledgeDocument.objects.filter(is_active=True)
             if university_id:
                 queryset = queryset.filter(Q(university_id=university_id) | Q(university__isnull=True))
-            
-            doc_count = queryset.count()
-            logger.info(f"Knowledge base contains {doc_count} active documents")
-            
-            return doc_count > 0
+
+            docs = list(queryset)
+            doc_count = len(docs)
+            logger.info(f"Building embedding index for {doc_count} active documents")
+
+            if self.model is None:
+                logger.warning("Semantic model unavailable — embeddings NOT built (keyword search still works).")
+                return doc_count > 0
+
+            done = 0
+            for doc in docs:
+                if self._load_embedding(doc) is not None:
+                    done += 1
+                    continue
+                if self._store_embedding(doc, f"{doc.title}. {doc.content}"):
+                    done += 1
+
+            logger.info(f"Embeddings ready for {done}/{doc_count} documents")
+            return done > 0
         except Exception as e:
             logger.error(f"Error building vector index: {e}")
             return False
@@ -277,22 +353,85 @@ class VectorSearchService:
                         if len(candidate_docs) >= top_k * 3:
                             break
                 logger.info(f"Expanded search: total {len(candidate_docs)} candidate documents")
+
+            # CONTENT AWARENESS (Phase 4): index published articles + approved
+            # opportunities into the SAME candidate set, flagged by source_type.
+            try:
+                from api.models import Article
+                articles = Article.objects.filter(
+                    is_published=True, status='published'
+                )
+                if university_id:
+                    articles = articles.filter(university_id=university_id)
+                for article in articles[:top_k * 2]:
+                    candidate_docs.append({
+                        'source_type': 'article',
+                        'title': article.title,
+                        'content': f"{article.excerpt or ''}\n{article.content}",
+                        'category': article.category,
+                        'tags': ', '.join(article.tags or []),
+                        'priority': 5,
+                        'usage_count': article.views or 0,
+                        'published_at': article.published_at or article.created_at,
+                    })
+            except Exception as e:
+                logger.debug(f"Article index skipped: {e}")
+
+            try:
+                from resources_opps.models import Opportunity
+                opps = Opportunity.objects.filter(status='approved', is_active=True)
+                if university_id:
+                    opps = opps.filter(university_id=university_id)
+                for opp in opps[:top_k * 2]:
+                    candidate_docs.append({
+                        'source_type': 'opportunity',
+                        'title': opp.title,
+                        'content': opp.content,
+                        'category': opp.category,
+                        'tags': '',
+                        'priority': 5,
+                        'usage_count': 0,
+                        'published_at': opp.created_at,
+                    })
+            except Exception as e:
+                logger.debug(f"Opportunity index skipped: {e}")
+
             
             # Score and rank documents
             scored_docs = []
             for doc in candidate_docs:
+                # Normalize ORM objects vs article/opportunity dicts
+                if isinstance(doc, dict):
+                    title = doc.get('title', '')
+                    content = doc.get('content', '')
+                    category = doc.get('category', '')
+                    tags = doc.get('tags', '')
+                    priority = int(doc.get('priority', 5))
+                    usage_count = int(doc.get('usage_count', 0))
+                    source_type = doc.get('source_type')
+                else:
+                    title = getattr(doc, 'title', '')
+                    content = getattr(doc, 'content', '')
+                    category = getattr(doc, 'category', '')
+                    tags = getattr(doc, 'tags', '') or ''
+                    priority = int(getattr(doc, 'priority', 5))
+                    usage_count = int(getattr(doc, 'usage_count', 0))
+                    source_type = None
+
                 # Semantic similarity score
                 semantic_score = 0.0
                 if query_embedding is not None and use_semantic:
-                    # Combine title and content for embedding
-                    doc_text = f"{doc.title}. {doc.content[:300]}"
-                    semantic_score = self._calculate_semantic_similarity(query_embedding, doc_text)
-                
+                    # Prefer the precomputed stored embedding for KB documents.
+                    stored_emb = self._load_embedding(doc) if not isinstance(doc, dict) else None
+                    if stored_emb is not None:
+                        semantic_score = self._cosine(query_embedding, stored_emb)
+                    else:
+                        doc_text = f"{title}. {content[:300]}"
+                        semantic_score = self._calculate_semantic_similarity(query_embedding, doc_text)
+
                 # Keyword relevance score
-                keyword_score = self._calculate_keyword_relevance(
-                    query, doc.title, doc.content, doc.tags or ""
-                )
-                
+                keyword_score = self._calculate_keyword_relevance(query, title, content, tags)
+
                 # Hybrid score: combine semantic and keyword
                 if use_hybrid and semantic_score > 0:
                     # Weighted combination: 70% semantic, 30% keyword
@@ -306,26 +445,27 @@ class VectorSearchService:
                     # If keyword score is high, boost it
                     if keyword_score > 15:
                         hybrid_score = min(hybrid_score * 1.2, 1.0)
-                
+
                 # Boost score based on priority and usage
-                priority_boost = doc.priority / 10.0  # Normalize to 0-1
-                usage_boost = min(doc.usage_count / 100.0, 0.2)  # Cap at 0.2
-                
+                priority_boost = priority / 10.0  # Normalize to 0-1
+                usage_boost = min(usage_count / 100.0, 0.2)  # Cap at 0.2
+
                 final_score = hybrid_score * (1.0 + priority_boost * 0.1 + usage_boost)
-                
+
                 # Ensure minimum score for documents with keyword matches
                 if keyword_score > 5 and final_score < 0.1:
                     final_score = 0.15  # Minimum relevance for documents with keyword matches
-                
+
                 scored_docs.append({
-                    'id': str(doc.id),
-                    'title': doc.title,
-                    'content': doc.content,
-                    'category': doc.category,
+                    'id': str(getattr(doc, 'id', '') or doc.get('id', '')),
+                    'title': title,
+                    'content': content,
+                    'category': category,
+                    'source_type': source_type,
                     'relevance': final_score,
                     'semantic_score': semantic_score,
                     'keyword_score': keyword_score,
-                    'document': doc,  # Keep reference for usage tracking
+                    'document': doc if not isinstance(doc, dict) else None,
                 })
             
             # Sort by relevance

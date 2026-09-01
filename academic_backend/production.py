@@ -2,11 +2,17 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from decouple import config
+from .network import build_allowed_hosts
 # Firebase initialization - optional, only if credentials exist and module is installed
 # Security
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-chb@r9zzss$o!gy+_(j6jt)wyxwkuif3ge+e^3$n%+3=ey6bea')
 DEBUG = config('DEBUG', default=False, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,102.202.74.81,caluu-backendii.kodin.co.tz').split(',')
+# ALLOWED_HOSTS: merge configured hosts with the machine's current local IPs so
+# the backend answers at whatever IP this computer currently has (changes with
+# DHCP). Configure static hosts via the ALLOWED_HOSTS env var.
+ALLOWED_HOSTS = build_allowed_hosts(
+    config('ALLOWED_HOSTS', default='localhost,127.0.0.1,caluu-backendii.kodin.co.tz').split(',')
+)
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -178,9 +184,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = 'api.User'
 
 # Gemini API Key
-# Uses environment variable if set; otherwise falls back to the provided key so you can run without env vars.
+# Reads from environment only. Never commit a real key to source.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "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")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Pricing configuration 
 # Cost per token in USD for Anthropic Claude (Haiku) – adjust as needed

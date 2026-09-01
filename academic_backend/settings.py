@@ -3,6 +3,14 @@ from pathlib import Path
 from datetime import timedelta
 import os
 
+# Load environment variables from the project .env file (local dev).
+# Reads the file relative to this file's parent directory (project root).
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(Path(__file__).resolve().parent.parent, '.env'))
+except ImportError:
+    pass
+
 # Firebase initialization - optional, only if credentials exist and module is installed
 FIREBASE_CREDENTIALS_PATH = os.path.join(Path(__file__).resolve().parent.parent, 'firebase-credentials.json')
 FIREBASE_INITIALIZED = False
@@ -54,7 +62,7 @@ INSTALLED_APPS = [
     "django_filters",
     "drf_spectacular",
     "api",
-    "chatbot",
+    "chatbot.apps.ChatbotConfig",
     "data_import",
     "resources_opps",
     "backups",
@@ -109,6 +117,31 @@ DATABASES = {
         }
     }
 }
+
+
+# Redis Cache Backend
+# Used for: response cache, RAG cache, rate limiting, student context cache, personal memories cache
+# Falls back to Django's default LocMemCache if Redis is not available.
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
+        "TIMEOUT": 300,  # default 5 min
+    }
+}
+
+# If django-redis is not installed, fall back to the default in-memory cache
+try:
+    import django_redis  # noqa: F401
+except ImportError:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
 
 
 # Password validation

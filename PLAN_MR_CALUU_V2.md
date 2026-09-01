@@ -1562,9 +1562,9 @@ if conv_docs.exists():
 ## Verification Checklist
 
 After each phase, verify:
-- [ ] `python manage.py makemigrations` — no errors
-- [ ] `python manage.py migrate` — applies cleanly
-- [ ] `python manage.py check` — no issues
+- [x] `python manage.py makemigrations` — no errors
+- [x] `python manage.py migrate` — applies cleanly
+- [x] `python manage.py check` — no issues
 - [ ] API endpoints respond correctly
 - [ ] No raw JSON leaks (Phase 1 A2)
 - [ ] Redis connection works (Phase 1 A1)
