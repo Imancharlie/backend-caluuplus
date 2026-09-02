@@ -117,9 +117,11 @@ def build_initial_dataset(serializer_context):
     venues = models.Venue.objects.filter(
         campus=campus, is_active=True, status="approved"
     ).select_related("campus", "building")
-    nodes = models.PathNode.objects.filter(campus=campus, is_active=True)
+    nodes = models.PathNode.objects.filter(campus=campus, is_active=True).select_related(
+        "campus"
+    )
     edges = models.PathEdge.objects.filter(campus=campus, is_active=True).select_related(
-        "start_node", "end_node"
+        "campus", "start_node", "end_node"
     )
 
     return {

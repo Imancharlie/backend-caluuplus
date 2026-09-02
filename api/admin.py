@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, UniversityLink, GPACalculation,StudentTerm, StudentCourseEnrollment
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleLike, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, UniversityLink, GPACalculation,StudentTerm, StudentCourseEnrollment
 
 
 @admin.register(User)
@@ -130,6 +130,14 @@ class ArticleAdmin(admin.ModelAdmin):
         })
     )
     readonly_fields = ('views', 'likes', 'share_count', 'created_at', 'updated_at')
+
+
+@admin.register(ArticleLike)
+class ArticleLikeAdmin(admin.ModelAdmin):
+    list_display = ('article', 'user', 'created_at')
+    list_filter = ('created_at',)
+    search_fields = ('article__title', 'user__display_name')
+    readonly_fields = ('created_at',)
 
 
 @admin.register(Notification)

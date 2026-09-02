@@ -1,4 +1,4 @@
-# Resources & Opportunities API Guide
+c:\Users\USER\Downloads\udsm_buildings.geojson c:\Users\USER\Downloads\udsm_paths.geojson# Resources & Opportunities API Guide
 
 This guide documents the complete API for the Resources and Opportunities Django app, designed for integration with React frontend applications.
 

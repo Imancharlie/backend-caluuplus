@@ -11,7 +11,7 @@ from django.db import models
 import re
 import time
 from .gpa_privacy import encrypt_gpa_for_user
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation, StudentTerm, StudentCourseEnrollment
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleLike, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation, StudentTerm, StudentCourseEnrollment
 from .serializers import ArticleSerializer
 from .serializers import ArticleCommentSerializer, ArticleCommentCreateSerializer
 from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university
@@ -1757,6 +1757,7 @@ def advance_student_period(request):
 # =============================================================================
 
 def _get_student(request):
+    
     """Return the authenticated student or a 404 Response."""
     try:
         return Student.objects.get(user=request.user)
@@ -3272,6 +3273,15 @@ def article_list(request):
     # Use serializer for consistent data format
     serializer = ArticleSerializer(articles_page, many=True, context={'request': request})
     article_data = serializer.data
+
+    # Pre-fetch liked article IDs for the current user
+    liked_article_ids = set()
+    if request.user.is_authenticated:
+        liked_article_ids = set(
+            ArticleLike.objects.filter(
+                article__in=articles_page, user=request.user
+            ).values_list('article_id', flat=True)
+        )
     
     # Add additional fields for list view
     for i, article in enumerate(articles_page):
@@ -3301,7 +3311,7 @@ def article_list(request):
         article_data[i]['author'] = author_data
         
         # Add frontend-specific fields
-        article_data[i]['is_liked'] = False
+        article_data[i]['is_liked'] = article.id in liked_article_ids
         article_data[i]['is_saved'] = False
         article_data[i]['is_shared'] = False
     
@@ -3363,7 +3373,7 @@ def article_detail(request, article_id):
     data['author'] = author_data
     
     # Add frontend-specific fields
-    data['is_liked'] = False  # TODO: Implement user-specific like status
+    data['is_liked'] = ArticleLike.objects.filter(article=article, user=request.user).exists() if request.user.is_authenticated else False
     data['is_saved'] = False  # TODO: Implement user-specific save status
     data['is_shared'] = False  # TODO: Implement user-specific share status
     
@@ -3440,19 +3450,28 @@ def article_categories(request):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def article_like(request, article_id):
-    """Like/unlike article"""
+    """Like/unlike article (toggle)"""
     try:
         article = Article.objects.get(id=article_id, is_published=True)
     except Article.DoesNotExist:
         return Response({'error': 'Article not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # TODO: Implement user-specific like tracking
-    # For now, just toggle the like count
+
+    like, created = ArticleLike.objects.get_or_create(article=article, user=request.user)
+
+    if not created:
+        like.delete()
+        article.likes = max(article.likes - 1, 0)
+        article.save(update_fields=['likes'])
+        return Response({
+            'is_liked': False,
+            'likes': article.likes
+        }, status=status.HTTP_200_OK)
+
     article.likes += 1
     article.save(update_fields=['likes'])
-    
+
     return Response({
-        'is_liked': True,  # TODO: Implement proper like status
+        'is_liked': True,
         'likes': article.likes
     }, status=status.HTTP_200_OK)
 

@@ -556,6 +556,24 @@ class Article(models.Model):
         return self.title
 
 
+class ArticleLike(models.Model):
+    """Tracks which users have liked an article."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    article = models.ForeignKey(Article, on_delete=models.CASCADE, related_name='user_likes')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='liked_articles')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('article', 'user')
+        indexes = [
+            models.Index(fields=['article', 'user']),
+        ]
+
+    def __str__(self):
+        return f"{self.user} liked {self.article}"
+
+
 class ArticleComment(models.Model):
     """Threaded comments on published articles."""
 

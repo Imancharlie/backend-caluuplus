@@ -99,7 +99,7 @@ Step by step (all synchronous inside the HTTP request thread):
 Principles:
 1. Academic answers are sensitive: the bot may ONLY surface information that is grounded in the
    knowledge base or the student's own profile. Never invent policies. When unsure, say so and
-   escalate ("ask your registrar").
+   escalate ("ask current prospectus for more clarity").
 2. Nothing a user asks auto-enters the KB. Questions/answers are COLLECTED as suggestions,
    reviewed and APPROVED by an admin, and only then promoted to `KnowledgeDocument`. This is the
    "learn as it chats when it notices something" loop, gated by human confirmation.

@@ -19,6 +19,8 @@ import logging
 import uuid
 
 from django.db.models import Count, Prefetch, Q
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 
 logger = logging.getLogger(__name__)
@@ -76,7 +78,10 @@ from .serializers import (
 
 
 def _active_campus_or_404(campus_id):
-    return get_object_or_404(Campus.objects.filter(is_active=True), pk=campus_id)
+    try:
+        return get_object_or_404(Campus.objects.filter(is_active=True), pk=campus_id)
+    except (ValueError, TypeError, DjangoValidationError):
+        raise Http404("Campus not found.")
 
 
 def _clean_campus(payload):
