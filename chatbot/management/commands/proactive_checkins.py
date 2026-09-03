@@ -1,6 +1,5 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from django.core.cache import cache
 from datetime import timedelta
 
 
@@ -10,6 +9,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from chatbot.models import Conversation, Message, StudentMemory
         from api.models import Student
+        from api.utils import safe_cache_get, safe_cache_set
 
         # Rate limit window: max 1 unsolicited check-in per student per 3 days
         rate_window_seconds = 3 * 24 * 3600
@@ -27,7 +27,7 @@ class Command(BaseCommand):
         for user_id in active_user_ids:
             # Hard rate limit — never feel like spam or surveillance
             rate_key = f"checkin:{user_id}"
-            if cache.get(rate_key):
+            if safe_cache_get(rate_key):
                 continue
 
             student = Student.objects.filter(user_id=user_id).first()
@@ -65,18 +65,17 @@ class Command(BaseCommand):
                 f"just checking in, no pressure 😊"
             )
 
-            with cache:
-                Message.objects.create(
-                    conversation=convo,
-                    role='assistant',
-                    content=checkin_msg,
-                    tokens_used=0,
-                    cost_tsh=0.0,
-                )
-                convo.save(update_fields=['updated_at'])
+            Message.objects.create(
+                conversation=convo,
+                role='assistant',
+                content=checkin_msg,
+                tokens_used=0,
+                cost_tsh=0.0,
+            )
+            convo.save(update_fields=['updated_at'])
 
-                # Rate limit for 3 days
-                cache.set(rate_key, True, timeout=rate_window_seconds)
+            # Rate limit for 3 days
+            safe_cache_set(rate_key, True, timeout=rate_window_seconds)
 
             sent_count += 1
             self.stdout.write(f"Check-in sent to user {user_id}")

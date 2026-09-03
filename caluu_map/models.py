@@ -90,10 +90,10 @@ class Campus(UUIDModel):
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True, default="")
     latitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_latitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_latitude]
     )
     longitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_longitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_longitude]
     )
     boundary = models.JSONField(
         null=True,
@@ -130,10 +130,10 @@ class Building(ModeratedModel):
     code = models.CharField(max_length=20, blank=True, default="")
     description = models.TextField(blank=True, default="")
     latitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_latitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_latitude]
     )
     longitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_longitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_longitude]
     )
     geometry = models.JSONField(
         null=True,
@@ -204,10 +204,10 @@ class Place(ModeratedModel):
     description = models.TextField(blank=True, default="")
     type = models.CharField(max_length=30, choices=PLACE_TYPES, default="other")
     latitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_latitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_latitude]
     )
     longitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_longitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_longitude]
     )
     floor = models.CharField(max_length=50, blank=True, default="")
     room_number = models.CharField(max_length=50, blank=True, default="")
@@ -276,10 +276,10 @@ class Venue(ModeratedModel):
     description = models.TextField(blank=True, default="")
     floor = models.CharField(max_length=50, blank=True, default="")
     latitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_latitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_latitude]
     )
     longitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_longitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_longitude]
     )
     is_active = models.BooleanField(default=True)
 
@@ -400,10 +400,10 @@ class PathNode(UUIDModel):
         Campus, on_delete=models.CASCADE, related_name="path_nodes"
     )
     latitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_latitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_latitude]
     )
     longitude = models.DecimalField(
-        max_digits=9, decimal_places=6, null=True, blank=True, validators=[validate_longitude]
+        max_digits=11, decimal_places=8, null=True, blank=True, validators=[validate_longitude]
     )
     node_type = models.CharField(max_length=20, choices=NODE_TYPES, default="walkway")
     name = models.CharField(max_length=200, blank=True, default="")

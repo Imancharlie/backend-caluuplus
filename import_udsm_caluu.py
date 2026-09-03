@@ -73,7 +73,7 @@ def run_import():
         # Get or create University
         university_obj, created = University.objects.get_or_create(
             name="University of Dar es Salaam",
-            defaults={"is_active": True}
+            defaults={"country": "Tanzania"}
         )
         if created:
             print(f"✅ Created new University entry: {university_obj.name}")

@@ -3,6 +3,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .tile_proxy import tile_proxy, tile_proxy_options
 from .views import (
     BuildingViewSet,
     CampusContributorViewSet,
@@ -38,4 +39,5 @@ urlpatterns = [
     path("sync/", SyncDataView.as_view(), name="map-sync"),
     path("search/", MapSearchView.as_view(), name="map-search"),
     path("nearby/", NearbyView.as_view(), name="map-nearby"),
+    path("tiles/<int:z>/<int:x>/<int:y>.png", tile_proxy, name="map-tile"),
 ]

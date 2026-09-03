@@ -1,5 +1,54 @@
-from typing import Iterable, Set
+from typing import Any, Iterable, Optional, Set
+import logging
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Fail-open cache helpers – Redis outages must never cause 500 errors.
+# Every helper catches ``ConnectionInterrupted`` / ``ConnectionError`` and
+# returns the caller-supplied default so the rest of the view can proceed
+# without caching.
+# ---------------------------------------------------------------------------
+
+def safe_cache_get(key: str, default: Any = None, **kwargs) -> Any:
+    """Get from Django cache; return *default* on any connection error."""
+    try:
+        from django.core.cache import cache
+        return cache.get(key, default=default, **kwargs)
+    except Exception:
+        logger.debug("cache.get failed for key=%s – falling back to default", key)
+        return default
+
+
+def safe_cache_set(key: str, value: Any, timeout: Optional[int] = None, **kwargs) -> bool:
+    """Set in Django cache; silently ignore connection errors."""
+    try:
+        from django.core.cache import cache
+        if timeout is not None:
+            cache.set(key, value, timeout=timeout, **kwargs)
+        else:
+            cache.set(key, value, **kwargs)
+        return True
+    except Exception:
+        logger.debug("cache.set failed for key=%s – ignoring", key)
+        return False
+
+
+def safe_cache_delete(key: str, **kwargs) -> bool:
+    """Delete from Django cache; silently ignore connection errors."""
+    try:
+        from django.core.cache import cache
+        cache.delete(key, **kwargs)
+        return True
+    except Exception:
+        logger.debug("cache.delete failed for key=%s – ignoring", key)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# University permission helpers
+# ---------------------------------------------------------------------------
 
 def get_allowed_university_ids_for_user(user) -> Set:
     """Return a set of university IDs the user can access.

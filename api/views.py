@@ -14,7 +14,7 @@ from .gpa_privacy import encrypt_gpa_for_user
 from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleLike, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation, StudentTerm, StudentCourseEnrollment
 from .serializers import ArticleSerializer
 from .serializers import ArticleCommentSerializer, ArticleCommentCreateSerializer
-from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university
+from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university, safe_cache_get, safe_cache_set, safe_cache_delete
 from .permissions import user_is_admin, user_is_ambassador
 from .serializers import (
     PasswordChangeSerializer, UserUpdateSerializer, UserSearchSerializer,
@@ -244,27 +244,25 @@ def rate_limit(max_calls=10, time_window=60):
     """Rate limiting decorator to prevent excessive API calls"""
     def decorator(view_func):
         def wrapper(request, *args, **kwargs):
-            # Create a unique key for this user and endpoint
-            user_id = getattr(request.user, 'id', 'anonymous')
-            endpoint = request.path
-            cache_key = f"rate_limit_{user_id}_{endpoint}"
-            
-            # Get current call count
-            current_calls = cache.get(cache_key, 0)
-            
-            if current_calls >= max_calls:
-                return Response({
-                    'error': 'Rate limit exceeded. Please wait before making more requests.',
-                    'retry_after': time_window,
-                    'current_calls': current_calls,
-                    'max_calls': max_calls,
-                    'time_window': time_window,
-                    'message': 'Please reduce the frequency of your API calls.'
-                }, status=status.HTTP_429_TOO_MANY_REQUESTS)
-            
-            # Increment call count
-            cache.set(cache_key, current_calls + 1, time_window)
-            
+            try:
+                user_id = getattr(request.user, 'id', 'anonymous')
+                endpoint = request.path
+                cache_key = f"rate_limit_{user_id}_{endpoint}"
+                current_calls = cache.get(cache_key, 0)
+
+                if current_calls >= max_calls:
+                    return Response({
+                        'error': 'Rate limit exceeded. Please wait before making more requests.',
+                        'retry_after': time_window,
+                        'current_calls': current_calls,
+                        'max_calls': max_calls,
+                        'time_window': time_window,
+                        'message': 'Please reduce the frequency of your API calls.'
+                    }, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+                cache.set(cache_key, current_calls + 1, time_window)
+            except Exception:
+                pass
             return view_func(request, *args, **kwargs)
         return wrapper
     return decorator
@@ -2159,7 +2157,7 @@ def user_basic_details(request):
     
     # Cache user details for 60 seconds to reduce database load
     cache_key = f"user_details_{request.user.id}"
-    cached_data = cache.get(cache_key)
+    cached_data = safe_cache_get(cache_key)
     
     if cached_data is not None:
         return Response(cached_data, status=status.HTTP_200_OK)
@@ -2195,7 +2193,7 @@ def user_basic_details(request):
         }
     
     # Cache for 60 seconds
-    cache.set(cache_key, data, 60)
+    safe_cache_set(cache_key, data, timeout=60)
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -2277,36 +2275,46 @@ def notification_unread_count(request):
     """Get unread notification count with caching and graceful rate limiting"""
     from django.core.cache import cache
     
-    # Check rate limit manually for better control
-    user_id = getattr(request.user, 'id', 'anonymous')
-    rate_limit_key = f"rate_limit_{user_id}_/api/notifications/unread-count/"
-    current_calls = cache.get(rate_limit_key, 0)
-    
-    if current_calls >= 30:  # Max 30 calls per 60 seconds
-        # Return cached data instead of error
+    try:
+        # Check rate limit manually for better control
+        user_id = getattr(request.user, 'id', 'anonymous')
+        rate_limit_key = f"rate_limit_{user_id}_/api/notifications/unread-count/"
+        current_calls = cache.get(rate_limit_key, 0)
+        
+        if current_calls >= 30:  # Max 30 calls per 60 seconds
+            # Return cached data instead of error
+            cache_key = f"unread_count_{request.user.id}"
+            cached_count = cache.get(cache_key, 0)
+            return Response({
+                'unread': cached_count,
+                'cached': True,
+                'message': 'Using cached data due to rate limiting'
+            }, status=status.HTTP_200_OK)
+        
+        # Increment rate limit counter
+        cache.set(rate_limit_key, current_calls + 1, 60)
+        
+        # Get unread count with caching
         cache_key = f"unread_count_{request.user.id}"
-        cached_count = cache.get(cache_key, 0)
+        unread_count = cache.get(cache_key)
+        
+        if unread_count is None:
+            unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
+            cache.set(cache_key, unread_count, 30)  # Cache for 30 seconds
+        
         return Response({
-            'unread': cached_count,
-            'cached': True,
-            'message': 'Using cached data due to rate limiting'
+            'unread': unread_count,
+            'cached': False
         }, status=status.HTTP_200_OK)
-    
-    # Increment rate limit counter
-    cache.set(rate_limit_key, current_calls + 1, 60)
-    
-    # Get unread count with caching
-    cache_key = f"unread_count_{request.user.id}"
-    unread_count = cache.get(cache_key)
-    
-    if unread_count is None:
+    except Exception as e:
+        # Fallback to database query if cache fails
+        print(f"Cache error in notification_unread_count: {e}")
         unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
-        cache.set(cache_key, unread_count, 30)  # Cache for 30 seconds
-    
-    return Response({
-        'unread': unread_count,
-        'cached': False
-    }, status=status.HTTP_200_OK)
+        return Response({
+            'unread': unread_count,
+            'cached': False,
+            'message': 'Cache unavailable, using database'
+        }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
@@ -2399,7 +2407,7 @@ def notification_mark_read(request, notification_id):
         
         # Invalidate the unread count cache
         cache_key = f"unread_count_{request.user.id}"
-        cache.delete(cache_key)
+        safe_cache_delete(cache_key)
     
     return Response({
         'id': str(notification.id),
@@ -2422,7 +2430,7 @@ def notification_mark_all_read(request):
     
     # Invalidate the unread count cache
     cache_key = f"unread_count_{request.user.id}"
-    cache.delete(cache_key)
+    safe_cache_delete(cache_key)
     
     return Response({
         'updated_count': updated_count,
@@ -4202,7 +4210,7 @@ def quote_random(request):
     
     # Create a cache key for recent quotes (last 10 quotes shown)
     recent_quotes_key = "recent_quotes_cache"
-    recent_quotes = cache.get(recent_quotes_key, [])
+    recent_quotes = safe_cache_get(recent_quotes_key, [])
     
     # Filter out recently shown quotes (last 10)
     available_quotes = [q for q in quotes_list if str(q.id) not in recent_quotes]
@@ -4237,7 +4245,7 @@ def quote_random(request):
         recent_quotes.pop(0)
     
     # Cache for 1 hour (3600 seconds)
-    cache.set(recent_quotes_key, recent_quotes, 3600)
+    safe_cache_set(recent_quotes_key, recent_quotes, timeout=3600)
     
     serializer = QuoteSerializer(selected_quote)
     

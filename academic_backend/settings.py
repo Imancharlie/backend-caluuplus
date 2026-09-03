@@ -119,29 +119,14 @@ DATABASES = {
 }
 
 
-# Redis Cache Backend
-# Used for: response cache, RAG cache, rate limiting, student context cache, personal memories cache
-# Falls back to Django's default LocMemCache if Redis is not available.
+# Cache Backend — LocMemCache (no external dependencies)
+# Redis is disabled to avoid connection errors when Redis is not running.
+# All cache operations fail-open via safe_cache helpers in api/utils.py.
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
-        "TIMEOUT": 300,  # default 5 min
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
-
-# If django-redis is not installed, fall back to the default in-memory cache
-try:
-    import django_redis  # noqa: F401
-except ImportError:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        }
-    }
 
 
 # Password validation

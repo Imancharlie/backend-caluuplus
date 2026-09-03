@@ -10,6 +10,8 @@ from django.conf import settings
 from django.utils import timezone
 import logging
 
+from api.utils import safe_cache_get, safe_cache_set, safe_cache_delete
+
 from anthropic import Anthropic
 
 # Gemini (Google) is the preferred AI provider for Mr. Caluu. The SDK is only
@@ -202,7 +204,7 @@ class EnhancedClaudeService:
         """Build comprehensive student context from existing models (Redis-cached)."""
         from django.core.cache import cache
         cache_key = f"student_ctx:{user.id}"
-        cached = cache.get(cache_key)
+        cached = safe_cache_get(cache_key)
         if cached is not None:
             return cached
 
@@ -267,7 +269,7 @@ class EnhancedClaudeService:
         if unread:
             lines.append(f"Unread notifications: {unread}")
         result = "\n".join(lines)
-        cache.set(cache_key, result, timeout=300)  # 5 min TTL
+        safe_cache_set(cache_key, result, timeout=300)  # 5 min TTL
         return result
 
     def _format_recent_messages(self, messages) -> str:
@@ -465,9 +467,8 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
 
     def _get_personal_memories(self, user) -> str:
         """Get top personal memories for this student, injected into prompt (Redis-cached)."""
-        from django.core.cache import cache
         cache_key = f"personal_mem:{user.id}"
-        cached = cache.get(cache_key)
+        cached = safe_cache_get(cache_key)
         if cached is not None:
             return cached
 
@@ -478,14 +479,14 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             ).order_by('-confidence', '-last_referenced_at')[:5]
 
             if not memories.exists():
-                cache.set(cache_key, "", timeout=300)
+                safe_cache_set(cache_key, "", timeout=300)
                 return ""
 
             lines = []
             for m in memories:
                 lines.append(f"- {m.key}: {m.value}")
             result = "\n".join(lines)
-            cache.set(cache_key, result, timeout=300)
+            safe_cache_set(cache_key, result, timeout=300)
             return result
         except Exception:
             return ""
@@ -557,8 +558,7 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
 
     def _get_cached_response(self, cache_key: str) -> EnhancedResponse | None:
         """Get cached response if available"""
-        from django.core.cache import cache
-        cached_data = cache.get(cache_key)
+        cached_data = safe_cache_get(cache_key)
         if cached_data:
             # Reconstruct EnhancedResponse from cached data with complete token tracking
             return EnhancedResponse(
@@ -578,7 +578,6 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
 
     def _cache_response(self, cache_key: str, response: EnhancedResponse, query_intent: str = "general"):
         """Cache response for future use with smart TTL based on query type"""
-        from django.core.cache import cache
         
         # Smart caching: longer TTL for common queries, shorter for personalized/time-sensitive
         has_personal_info = response.personality_notes is not None or response.instructions is not None
@@ -613,7 +612,7 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             'cost': response.cost_tsh,
             'cached_at': datetime.now().isoformat()
         }
-        cache.set(cache_key, cache_data, ttl)
+        safe_cache_set(cache_key, cache_data, timeout=ttl)
         logger.info(f"Response cached with {ttl}s TTL (intent: {query_intent}, personal: {has_personal_info}, schedule: {has_schedule_info})")
 
     def _extract_json(self, text_str: str) -> Dict:
@@ -798,11 +797,9 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         Allows up to _max_burst requests within the interval window.
         Only blocks (raises) when the burst limit is exceeded.
         """
-        from django.core.cache import cache
-
         max_burst = 5  # Allow up to 5 rapid messages before throttling
         cache_key = f"throttle:user:{user_id}"
-        count = cache.get(cache_key, 0)
+        count = safe_cache_get(cache_key, 0)
 
         if count >= max_burst:
             raise RuntimeError(
@@ -810,7 +807,7 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             )
 
         # Increment counter; TTL sets the sliding window
-        cache.set(cache_key, count + 1, timeout=int(self._min_request_interval))
+        safe_cache_set(cache_key, count + 1, timeout=int(self._min_request_interval))
 
     def get_enhanced_response(self, user_message: str, user, conversation, rag_context: str = "", 
                             navigation_context: str = "", intent_info: dict | None = None) -> EnhancedResponse:

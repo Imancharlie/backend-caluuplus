@@ -13,26 +13,47 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            # The api_articlelike table already exists in the database (created by a
-            # previously removed migration). Only ensure the composite lookup index
-            # from the model Meta exists; do NOT attempt to recreate the table.
-            sql="CREATE INDEX IF NOT EXISTS api_article_article_5d35bf_idx ON api_articlelike (article_id, user_id);",
-            reverse_sql="DROP INDEX IF EXISTS api_article_article_5d35bf_idx;",
-            state_operations=[
-                migrations.CreateModel(
-                    name='ArticleLike',
-                    fields=[
-                        ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
-                        ('created_at', models.DateTimeField(auto_now_add=True)),
-                        ('article', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='user_likes', to='api.article')),
-                        ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='liked_articles', to=settings.AUTH_USER_MODEL)),
-                    ],
-                    options={
-                        'indexes': [models.Index(fields=['article', 'user'], name='api_article_article_5d35bf_idx')],
-                        'unique_together': {('article', 'user')},
-                    },
+        migrations.CreateModel(
+            name='ArticleLike',
+            fields=[
+                (
+                    'id',
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                (
+                    'created_at',
+                    models.DateTimeField(auto_now_add=True),
+                ),
+                (
+                    'article',
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name='user_likes',
+                        to='api.article',
+                    ),
+                ),
+                (
+                    'user',
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name='liked_articles',
+                        to=settings.AUTH_USER_MODEL,
+                    ),
                 ),
             ],
+            options={
+                'unique_together': {('article', 'user')},
+                'indexes': [
+                    models.Index(
+                        fields=['article', 'user'],
+                        name='api_article_article_5d35bf_idx',
+                    ),
+                ],
+            },
         ),
     ]
