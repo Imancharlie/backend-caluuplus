@@ -544,7 +544,7 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     logger.warning(f"Token consumption skipped in stream: {e}")
 
-                yield f"data: {json.dumps({'type': 'done', **metadata})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'reply': full_text, **metadata})}\n\n"
 
             except Exception as e:
                 logger.error(f"Streaming error for user {request.user.id}: {e}")

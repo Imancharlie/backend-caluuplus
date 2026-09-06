@@ -1,0 +1,550 @@
+
+
+should simply appear as a point/milestone.
+
+It should not display:
+
+Day 1
+
+for an extended period.
+
+39. Handling Long Events
+
+For long events such as:
+
+University Examinations
+
+the UI should show meaningful progress.
+
+Example:
+
+University Examinations
+
+Week 2
+
+or:
+
+Day 8
+
+depending on duration and UX rules.
+
+The important principle is:
+
+Describe progress inside the event naturally, not as a mathematical fraction.
+
+Avoid:
+
+8 / 29
+
+unless there is a compelling future design reason.
+
+40. Event Countdown Priority
+
+When a current event is active:
+
+The primary contextual information should describe the current event.
+
+For example:
+
+TODAY
+
+University Examinations
+Week 2
+
+Do not aggressively show:
+
+0 days until University Examinations
+
+because the event has already started.
+
+Instead, the countdown should transition to the next event when appropriate.
+
+Example:
+
+University Examinations
+Week 2
+
+Next:
+Semester Break
+12 days
+41. Transition Between Events
+
+When an event ends:
+
+Examinations
+Week 3
+
+should transition into:
+
+Semester Break
+
+The timeline should automatically recognize the new state.
+
+No app update should be required.
+
+42. Timeline Data Processing
+
+Create a dedicated utility/service for timeline calculations.
+
+For example conceptually:
+
+academicTimelineUtils
+
+Responsibilities:
+
+getCurrentEvent()
+getPreviousEvent()
+getNextEvent()
+getSemesterWeek()
+getEventProgress()
+getCountdown()
+getCurrentPosition()
+
+Do not put all of this logic directly inside the UI component.
+
+This will make the component easier to maintain and test.
+
+43. Suggested Data Flow
+                 BACKEND
+                    │
+                    ▼
+          Academic Calendar API
+                    │
+                    ▼
+              API Service
+                    │
+                    ▼
+             Calendar Data
+                    │
+                    ▼
+        Timeline Calculation Layer
+          │       │       │
+          │       │       └── Countdown
+          │       └────────── Semester Week
+          └────────────────── Current Event
+                    │
+                    ▼
+            Timeline Component
+                    │
+          ┌─────────┼─────────┐
+          ▼         ▼         ▼
+       Events     Today     Week BG
+44. Component Structure
+
+Do not make one giant component.
+
+A reasonable structure could be:
+
+AcademicTimeline
+│
+├── TimelineHeader
+│
+├── SemesterWeekBackground
+│
+├── TimelineScroller
+│   ├── TimelineEvent
+│   ├── TimelineEvent
+│   ├── TimelineEvent
+│   └── ...
+│
+├── TodayIndicator
+│
+└── TimelineEventDetails
+
+The exact names can follow the existing project conventions.
+
+45. Performance Requirements
+
+The academic calendar may contain many events.
+
+The timeline should remain smooth.
+
+Avoid:
+
+unnecessary re-renders
+per-second React state updates
+expensive calculations on every render
+rebuilding every event unnecessarily
+
+Memoize derived calculations where appropriate.
+
+Use a virtualized horizontal list if the number of events becomes large.
+
+For a normal academic year, however, the number of events is likely small enough that a normal horizontal list may be sufficient.
+
+Do not over-engineer before necessary.
+
+46. Responsive Design
+
+The component must work on:
+
+mobile
+tablet
+desktop web
+
+The visual concept should remain the same.
+
+On small screens:
+
+[ Previous ] [ TODAY ] [ Next ]
+
+should remain understandable.
+
+On larger screens, more surrounding events can be visible.
+
+Do not force desktop dimensions onto mobile.
+
+47. Interaction Rules
+User scrolls
+
+Allow completely free exploration.
+
+User taps an event
+
+Show useful information for that event.
+
+Potentially:
+
+University Examinations
+Aug 20 – Sep 10
+
+Currently:
+Week 2
+
+If the existing design already has event details, integrate with it rather than creating a new modal unnecessarily.
+
+User stops interacting
+
+After ~60 seconds:
+
+smoothly recenter on current position
+User returns to Academics page
+
+Immediately calculate the current position again.
+
+Never rely on stale UI state.
+
+48. DO NOT
+
+The code agent must follow these rules.
+
+Do not create a new page
+
+This remains inside:
+
+Academics page
+Do not create a new navigation route.
+Do not hardcode UDSM dates.
+Do not hardcode one university.
+Do not hardcode semester length.
+Do not hardcode the current semester.
+Do not hardcode today's date.
+Do not use calendar week numbers for semester weeks.
+Do not use actual time distances to determine visual spacing between events.
+Do not make the timeline start from the first academic event.
+Do not continuously force the timeline back to today.
+Do not reset the user's scroll immediately.
+Do not show an overwhelming countdown.
+Do not turn the semester-week background into the primary timeline.
+Do not treat a multi-day event as many separate events.
+Do not display confusing text such as:
+Day 4 of 29
+
+The intended language is:
+
+Day 4
+
+or:
+
+Week 2
+Do not put all timeline logic inside the UI component.
+Do not duplicate backend calendar data in frontend constants.
+Do not break existing Academics functionality.
+Do not redesign unrelated parts of Caluu+.
+49. DO
+Do
+Use backend calendar data as the source of truth.
+Support multiple universities.
+Support multiple academic years.
+Support multiple semesters.
+Support single-day events.
+Support multi-day events.
+Calculate state dynamically.
+Calculate semester week from semester start.
+Make the timeline horizontally scrollable.
+Center the initial view around the current academic position.
+Show the previous/current/next context.
+Show a distinct Today indicator.
+Allow the Today position to progress naturally with time.
+Show subtle countdown information.
+Switch from days to hours when less than 24 hours remain.
+Show event progress for long events.
+Show semester week subtly in the background.
+Automatically return to today's position after ~60 seconds of inactivity.
+Cache calendar data where the existing architecture supports it.
+Handle loading/error/empty states gracefully.
+Preserve the existing Caluu+ design system.
+Keep the component lightweight and performant.
+50. Example Final Experience
+
+Imagine the student opens Caluu+ today.
+
+They see:
+
+                ACADEMIC TIMELINE
+
+       WEEK 7          WEEK 8          WEEK 9
+         │               │               │
+         │               │               │
+─────────●───────────────│───────────────●────────
+         │               │               │
+   Registration          │           Examinations
+                         │
+                       TODAY
+                         │
+                      Week 8
+
+Under/around the current event:
+
+Lectures
+
+Week 8
+
+5 days left
+
+The student swipes right:
+
+             TODAY
+               │
+───────────────●───────────●───────────●──────────
+                           │
+                       Mid-Semester
+
+They continue exploring the future.
+
+After approximately one minute without touching the timeline:
+
+             ↓
+      Smoothly returns
+             ↓
+
+Previous Event ───── TODAY ───── Next Event
+
+As the days pass, the Today indicator naturally progresses.
+
+When an upcoming event reaches less than 24 hours:
+
+18 hours left
+
+When it starts:
+
+TODAY
+
+University Examinations
+Day 1
+
+Several days later:
+
+TODAY
+
+University Examinations
+Day 4
+
+Later:
+
+TODAY
+
+University Examinations
+Week 2
+
+When the examination period ends:
+
+TODAY
+
+Semester Break
+
+Next:
+Semester 2
+
+And the whole thing happens automatically from the calendar dates.
+
+51. Implementation Order
+
+Tell the code agent to implement in this order:
+
+Phase 1 — Inspect existing architecture
+
+Before changing code:
+
+Locate the existing Academics page.
+Locate the existing Academic Timeline component.
+Locate the existing academic/calendar API.
+Identify the current student/university relationship.
+Identify existing API service/query patterns.
+Identify existing design system/theme/components.
+Identify whether local storage/cache already exists.
+
+Do not create duplicate infrastructure if something already exists.
+
+Phase 2 — Backend verification
+
+Verify that the backend can provide:
+
+University
+Academic Year
+Semester
+Semester start
+Semester end
+Events
+Event start
+Event end
+Event type
+
+If existing backend models/endpoints already provide these, reuse them.
+
+Only modify backend where genuinely necessary.
+
+Phase 3 — Data layer
+
+Implement/fix:
+
+fetchAcademicCalendar()
+
+and normalize the response into a predictable frontend structure.
+
+Phase 4 — Timeline calculation engine
+
+Implement utilities for:
+
+current event
+previous event
+next event
+semester week
+event day/week progress
+countdown
+current position
+
+Write these independently from the UI.
+
+Phase 5 — Timeline UI
+
+Implement:
+
+horizontal scrolling
+event markers
+equal visual spacing
+Today marker
+event labels
+countdown
+Phase 6 — Semester week background
+
+Add the subtle background layer:
+
+Week 6
+Week 7
+Week 8
+Week 9
+Week 10
+
+with current week emphasized and neighboring weeks faded.
+
+Phase 7 — Automatic positioning
+
+Implement:
+
+initial center → current position
+
+and:
+
+60 seconds inactivity → current position
+Phase 8 — Time-based updates
+
+Ensure the UI updates correctly when:
+
+the day changes
+an event begins
+an event ends
+countdown crosses 24 hours
+the app returns from background
+Phase 9 — Edge cases
+
+Test:
+
+Before semester starts.
+First event of academic year.
+During first event.
+Between events.
+During a long event.
+During final event.
+After academic year ends.
+Missing calendar.
+Missing event end date.
+Multiple universities.
+Different semester lengths.
+Offline cached data.
+API failure.
+52. Acceptance Criteria
+
+The implementation is complete only when all of these are true:
+
+ Timeline exists inside the existing Academics page.
+ No new page is created.
+ No unnecessary navigation route is created.
+ Calendar comes from backend.
+ Student's university determines the calendar.
+ Multiple universities are supported.
+ Academic year is dynamic.
+ Semester is dynamic.
+ Events are dynamic.
+ Single-day events work.
+ Multi-day events work.
+ Timeline is horizontally scrollable.
+ Events have consistent visual spacing.
+ Initial position centers around the current academic period.
+ Previous event is visible.
+ Current position is visible.
+ Upcoming event is visible.
+ Today indicator is visually distinct.
+ Today position updates with time.
+ Countdown displays days when appropriate.
+ Countdown switches to hours under 24 hours.
+ Active multi-day events show progress such as Day 4 or Week 2.
+ Semester week is calculated from semester start.
+ Semester week does not use calendar week numbers.
+ Semester weeks appear subtly in the background.
+ Current week is distinguishable.
+ Neighboring weeks are visible/faded.
+ Week background does not interfere with the timeline.
+ User can freely scroll backward.
+ User can freely scroll forward.
+ Timeline does not immediately snap back while scrolling.
+ Timeline returns to current position after ~60 seconds of inactivity.
+ Return animation is smooth.
+ Loading state exists.
+ Empty state exists.
+ Error state exists.
+ Existing Academics features remain unaffected.
+ No university-specific frontend hardcoding exists.
+ No unnecessary per-second rendering loop exists.
+ Code is separated into reusable calculation logic and UI logic.
+Final instruction to the code agent
+
+Treat the above as a product and implementation specification, not as permission to redesign the entire Academics page.
+
+First inspect the existing Caluu+ architecture and identify what already exists. Reuse existing models, endpoints, API services, state management, styling conventions, and components wherever possible.
+
+The primary goal is to transform the current Academic Timeline from a basic calendar display into a dynamic, backend-driven, multi-university academic progress timeline that answers one question immediately:
+
+"Where am I in my academic year right now, and what's coming next?"
+
+Do not implement unrelated features. Do not create unnecessary routes. Do not replace existing architecture without a concrete reason.
+
+After implementation, report:
+
+Files changed.
+Files created.
+Backend endpoints used/modified.
+Data structure expected from the backend.
+Timeline calculation utilities created.
+UI behavior implemented.
+Any assumptions made.

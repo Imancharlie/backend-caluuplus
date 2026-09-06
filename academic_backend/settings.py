@@ -119,14 +119,29 @@ DATABASES = {
 }
 
 
-# Cache Backend — LocMemCache (no external dependencies)
-# Redis is disabled to avoid connection errors when Redis is not running.
-# All cache operations fail-open via safe_cache helpers in api/utils.py.
+# Redis Cache Backend
+# Used for: response cache, RAG cache, rate limiting, student context cache, personal memories cache
+# Falls back to Django's default LocMemCache if Redis is not available.
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
+        "TIMEOUT": 300,  # default 5 min
     }
 }
+
+# If django-redis is not installed, fall back to the default in-memory cache
+try:
+    import django_redis  # noqa: F401
+except ImportError:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
 
 
 # Password validation
@@ -181,9 +196,15 @@ AUTH_USER_MODEL = 'api.User'
 # Gemini API Key
 # Uses environment variable if set; otherwise falls back to the provided key so you can run without env vars.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-# Gemini model used by Mr. Caluu. gemini-3.6-flash is fast and reliably
-# available on this API key; newer alias models can be slow/rate-limited.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+# Gemini model used by Mr. Caluu. Benchmarks: gemini-3.6-flash is a "thinking"
+# model (~19s/reply and burns the token budget on hidden reasoning, causing
+# truncated answers). gemini-flash-latest with thinking disabled replies in
+# ~2.8s, so it is the default. Override via env if needed.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+# Allow Google Search grounding for general / current-affairs questions that are
+# not covered by the university knowledge base. Requires a key/tier that permits
+# the google_search tool; keep off until verified to avoid 4xx errors.
+GEMINI_ENABLE_WEB_SEARCH = os.getenv("GEMINI_ENABLE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Pricing configuration 

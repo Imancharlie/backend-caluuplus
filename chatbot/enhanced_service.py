@@ -30,6 +30,23 @@ from .models import ChatHistory, KnowledgeDocument
 from api.models import Student, StudentCourse, TimetableSlot, Notification
 
 
+# --- Gemini tuning -----------------------------------------------------------
+# "Thinking" models (e.g. gemini-3.6-flash) spend hidden reasoning tokens out of
+# the same ``max_output_tokens`` budget as the visible answer. That made replies
+# slow (~19s) and, with the chatbot's small token budget, empty / truncated
+# (finish_reason MAX_TOKENS). We now run a fast model with thinking DISABLED by
+# default (~2.8s) and only spend a little reasoning on critical/procedure
+# questions. ``max_output_tokens`` still gets headroom so answers never get cut.
+#
+# thinking_budget = 0  -> thinking disabled (fast). Note: some models reject 0
+#                         with a 400; _call_llm auto-retries without the config.
+GEMINI_THINKING_BUDGET = int(os.getenv("GEMINI_THINKING_BUDGET", "0"))
+# Reasoning budget reserved for critical / procedure questions only.
+GEMINI_THINKING_BUDGET_CRITICAL = int(os.getenv("GEMINI_THINKING_BUDGET_CRITICAL", "384"))
+GEMINI_OUTPUT_HEADROOM = int(os.getenv("GEMINI_OUTPUT_HEADROOM", "512"))
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
+
+
 @dataclass
 class EnhancedResponse:
     text: str
@@ -107,7 +124,61 @@ class EnhancedClaudeService:
             f"model={self._model}) with {self._min_request_interval}s request interval"
         )
 
-    def _call_llm(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int):
+    def _gemini_config(self, system_prompt: str, max_tokens: int, headroom: Optional[int] = None,
+                       thinking_budget: Optional[int] = None, omit_thinking: bool = False,
+                       use_web_search: bool = False):
+        """Build a Gemini GenerateContentConfig.
+
+        ``max_tokens`` is the budget for the visible answer; ``headroom`` extra
+        tokens are added so hidden reasoning never crowds out the reply.
+        ``thinking_budget`` overrides the default reasoning budget for this call
+        (0 disables thinking). ``omit_thinking`` drops the thinking config
+        entirely -- used as a fallback for models that reject ``thinking_budget=0``.
+        ``use_web_search`` attaches Google Search grounding so the model can answer
+        general / current-affairs questions from live web results.
+        """
+        if headroom is None:
+            headroom = GEMINI_OUTPUT_HEADROOM
+        cfg = gemini_types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            max_output_tokens=int(max_tokens) + int(headroom),
+            temperature=0.2,
+            response_modalities=["TEXT"],
+        )
+        # Web search grounding conflicts with thinking -> disable thinking here.
+        if use_web_search and getattr(gemini_types, "GoogleSearch", None) is not None:
+            try:
+                cfg.tools = [gemini_types.Tool(google_search=gemini_types.GoogleSearch())]
+                return cfg
+            except Exception:
+                logger.warning("Could not attach GoogleSearch tool; continuing without web grounding")
+        if not omit_thinking:
+            budget = GEMINI_THINKING_BUDGET if thinking_budget is None else int(thinking_budget)
+            try:
+                cfg.thinking_config = gemini_types.ThinkingConfig(thinking_budget=budget)
+            except Exception:
+                pass
+        return cfg
+
+    @staticmethod
+    def _gemini_truncated(resp) -> bool:
+        """True when the model ran out of budget or returned no visible text."""
+        try:
+            text = (resp.text or "").strip()
+        except Exception:
+            text = ""
+        if text:
+            return False
+        candidates = getattr(resp, "candidates", None) or []
+        for c in candidates:
+            fr = str(getattr(c, "finish_reason", "") or "").upper()
+            if "MAX_TOKENS" in fr:
+                return True
+        # No text and no explicit reason -> treat as retryable empty response.
+        return True
+
+    def _call_llm(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int,
+                  thinking_budget: Optional[int] = None, use_web_search: bool = False):
         """Dispatch a chat completion to the active provider (Gemini or Anthropic).
 
         Returns an object with ``.content`` (a list of ``{type, text}`` blocks)
@@ -115,16 +186,50 @@ class EnhancedClaudeService:
         pipeline is provider-agnostic.
         """
         if self._provider == 'gemini' and self._gemini_client is not None:
-            resp = self._gemini_client.models.generate_content(
-                model=self._model,
-                contents=user_content,
-                config=gemini_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=max_tokens,
-                    temperature=0.2,
-                    response_modalities=["TEXT"],
-                ),
-            )
+            import time
+
+            resp = None
+            headroom = GEMINI_OUTPUT_HEADROOM
+            omit_thinking = False
+            last_err = None
+            for attempt in range(GEMINI_MAX_RETRIES + 1):
+                try:
+                    resp = self._gemini_client.models.generate_content(
+                        model=self._model,
+                        contents=user_content,
+                        config=self._gemini_config(
+                            system_prompt, max_tokens, headroom,
+                            thinking_budget=thinking_budget, omit_thinking=omit_thinking,
+                            use_web_search=use_web_search,
+                        ),
+                    )
+                    # If the model still ran out of budget, grow headroom and retry.
+                    if self._gemini_truncated(resp) and attempt < GEMINI_MAX_RETRIES:
+                        headroom *= 2
+                        logger.warning(
+                            "Gemini reply empty/truncated (attempt %d); retrying with "
+                            "headroom=%d", attempt + 1, headroom,
+                        )
+                        continue
+                    break
+                except Exception as e:  # noqa: BLE001 - retry transient/5xx errors
+                    last_err = e
+                    msg = str(e)
+                    # Some models reject thinking_budget=0 with a 400 -> retry once
+                    # with the thinking config omitted entirely.
+                    if not omit_thinking and ("400" in msg or "INVALID_ARGUMENT" in msg):
+                        omit_thinking = True
+                        logger.warning("Gemini rejected thinking config; retrying without it")
+                        continue
+                    transient = any(s in msg for s in ("503", "UNAVAILABLE", "429", "high demand", "RESOURCE_EXHAUSTED"))
+                    if transient and attempt < GEMINI_MAX_RETRIES:
+                        wait = 1.5 * (attempt + 1)
+                        logger.warning("Gemini transient error (%s); retrying in %.1fs", msg[:80], wait)
+                        time.sleep(wait)
+                        continue
+                    raise
+            if resp is None:
+                raise last_err or RuntimeError("Gemini returned no response")
 
             class _Usage:
                 def __init__(self, p, o):
@@ -166,26 +271,52 @@ class EnhancedClaudeService:
             timeout=timeout_seconds,
         )
 
-    def _call_llm_streaming(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int):
+    def _call_llm_streaming(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int,
+                            thinking_budget: Optional[int] = None, use_web_search: bool = False):
         """Yield text chunks as they are generated (native streaming).
 
         Yields strings of text. Caller consumes them in a generator loop.
         """
         if self._provider == 'gemini' and self._gemini_client is not None:
-            for chunk in self._gemini_client.models.generate_content_stream(
-                model=self._model,
-                contents=user_content,
-                config=gemini_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=max_tokens,
-                    temperature=0.2,
-                    response_modalities=["TEXT"],
-                ),
-            ):
-                text = getattr(chunk, "text", None) or ""
-                if text:
-                    yield text
-            return
+            import time
+
+            omit_thinking = False
+            yielded_any = False
+            transient_tries = 0
+            while True:
+                try:
+                    for chunk in self._gemini_client.models.generate_content_stream(
+                        model=self._model,
+                        contents=user_content,
+                        config=self._gemini_config(
+                            system_prompt, max_tokens,
+                            thinking_budget=thinking_budget, omit_thinking=omit_thinking,
+                            use_web_search=use_web_search,
+                        ),
+                    ):
+                        text = getattr(chunk, "text", None) or ""
+                        if text:
+                            yielded_any = True
+                            yield text
+                    return
+                except Exception as e:  # noqa: BLE001
+                    msg = str(e)
+                    # Retry once without thinking only if nothing was streamed yet,
+                    # so we never duplicate partial output.
+                    if (not yielded_any and not omit_thinking
+                            and ("400" in msg or "INVALID_ARGUMENT" in msg)):
+                        omit_thinking = True
+                        logger.warning("Gemini stream rejected thinking config; retrying without it")
+                        continue
+                    # Retry transient 5xx/quota errors, but only before any output.
+                    transient = any(s in msg for s in ("503", "UNAVAILABLE", "429", "high demand", "RESOURCE_EXHAUSTED"))
+                    if (not yielded_any and transient and transient_tries < GEMINI_MAX_RETRIES):
+                        transient_tries += 1
+                        wait = 1.5 * transient_tries
+                        logger.warning("Gemini stream transient error (%s); retrying in %.1fs", msg[:80], wait)
+                        time.sleep(wait)
+                        continue
+                    raise
 
         # Anthropic streaming
         with self._client.messages.stream(
@@ -366,13 +497,43 @@ class EnhancedClaudeService:
         # Determine if it's a critical question (needs knowledge base)
         critical_keywords = ['regulation', 'rule', 'policy', 'procedure', 'how to', 'requirement']
         is_critical = any(kw in query_lower for kw in critical_keywords)
-        
+
+        # --- General-knowledge / current-affairs detection -------------------
+        # Questions that are NOT about UDSM/university specifics can be answered
+        # from the model's own knowledge and (optionally) live web search, instead
+        # of being forced through the "KB only" rule.
+        university_signals = [
+            'udsm', 'campus', 'semester', 'exam', 'registration', 'fee', 'fees',
+            'course', 'timetable', 'hostel', 'graduation', 'gpa', 'transcript',
+            'faculty', 'dean', 'credit', 'tuition', 'resit', 'defer', 'deferral',
+            'student', 'lecturer', 'assignment', 'result', 'results', 'college',
+            'department', 'vice chancellor', 'regulation', 'policy', 'syllabus',
+        ]
+        general_signals = [
+            'today', 'latest', 'current', 'news', 'price', 'prices', 'exchange rate',
+            'usd', 'tzs', 'shilling', 'dollar', 'weather', 'who is', 'president',
+            'match', 'score', 'convert', 'how much', 'tanzania', 'dar es salaam',
+            'technology', 'science', 'history', 'meaning of', 'define', 'recipe',
+            'football', 'economy', 'election', 'phone', 'best way to', 'tip',
+        ]
+        has_university_signal = any(kw in query_lower for kw in university_signals)
+        has_general_signal = any(kw in query_lower for kw in general_signals)
+        # General only when it does not look like a university topic.
+        is_general = (not has_university_signal) and (
+            has_general_signal or primary_intent in ('faq', 'academic_advice')
+        )
+
+        web_search_enabled = bool(getattr(settings, 'GEMINI_ENABLE_WEB_SEARCH', False))
+        use_web_search = bool(web_search_enabled and is_general and not is_critical)
+
         return {
             'primary_intent': primary_intent,
             'all_intents': detected_intents,
             'confidence': confidence_scores,
             'is_critical': is_critical,
-            'needs_knowledge_base': is_critical or primary_intent in ['procedure', 'regulation', 'faq']
+            'is_general': is_general,
+            'use_web_search': use_web_search,
+            'needs_knowledge_base': (not is_general) or is_critical,
         }
     
     def _extract_personal_info_from_message(self, message: str) -> str:
@@ -856,10 +1017,13 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         # Token budget: plain text output needs fewer tokens than JSON
         if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
             max_tokens = 500
+            thinking_budget = GEMINI_THINKING_BUDGET_CRITICAL
         elif intent_info.get('primary_intent') == 'navigation':
             max_tokens = 250
+            thinking_budget = GEMINI_THINKING_BUDGET
         else:
             max_tokens = 400
+            thinking_budget = GEMINI_THINKING_BUDGET
 
         for attempt in range(max_retries):
             try:
@@ -868,6 +1032,8 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
                     formatted_message,
                     max_tokens,
                     timeout_seconds,
+                    thinking_budget=thinking_budget,
+                    use_web_search=bool(intent_info.get('use_web_search')),
                 )
                 break  # Success
 
@@ -1093,22 +1259,38 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         # Token budget
         if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
             max_tokens = 500
+            thinking_budget = GEMINI_THINKING_BUDGET_CRITICAL
         elif intent_info.get('primary_intent') == 'navigation':
             max_tokens = 250
+            thinking_budget = GEMINI_THINKING_BUDGET
         else:
             max_tokens = 400
+            thinking_budget = GEMINI_THINKING_BUDGET
 
         full_text = ""
         try:
-            for chunk in self._call_llm_streaming(system_prompt, formatted_message, max_tokens, 20):
+            for chunk in self._call_llm_streaming(system_prompt, formatted_message, max_tokens, 20,
+                                                  thinking_budget=thinking_budget,
+                                                  use_web_search=bool(intent_info.get('use_web_search'))):
                 full_text += chunk
                 yield {"type": "text", "content": chunk}
         except Exception as e:
             error_msg = str(e).lower()
             logger.error(f"Streaming LLM call failed: {error_msg}")
-            fallback = "I'm having trouble connecting right now. Please try again in a moment."
-            yield {"type": "text", "content": fallback}
-            full_text = fallback
+            if any(s in error_msg for s in ("429", "rate limit", "quota", "resource_exhausted", "too many requests")):
+                fallback = ("I'm hitting my usage limit right now — please try again in a minute. "
+                            "For anything urgent, the university website or your academic advisor is the fastest route.")
+            elif any(s in error_msg for s in ("503", "unavailable", "high demand", "timeout", "connection", "network")):
+                fallback = "I'm having trouble connecting right now. Please try again in a moment."
+            else:
+                fallback = "I'm having trouble processing that right now. Please try again in a moment."
+            if full_text.strip():
+                # Keep what already streamed; just flag that it was cut short.
+                full_text = full_text.rstrip() + " …(that got cut off — send it again and I'll finish.)"
+                yield {"type": "text", "content": " …(that got cut off — send it again and I'll finish.)"}
+            else:
+                yield {"type": "text", "content": fallback}
+                full_text = fallback
 
         # Ensure clean text
         full_text = self._ensure_clean_text(full_text)
