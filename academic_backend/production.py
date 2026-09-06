@@ -92,6 +92,7 @@ INSTALLED_APPS = [
     "backups",
     "tokens",
     "caluu_map",
+    "academia",
 ]
 
 MIDDLEWARE = [

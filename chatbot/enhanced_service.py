@@ -262,10 +262,11 @@ class EnhancedClaudeService:
             return unified
 
         # Default: Anthropic Claude
+        # Note: temperature was dropped by the anthropic SDK (>=1.0); omit it so
+        # the fallback doesn't crash with a TypeError when Gemini is unavailable.
         return self._client.messages.create(
             model=self._model,
             max_tokens=max_tokens,
-            temperature=0.2,
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
             timeout=timeout_seconds,
@@ -322,7 +323,6 @@ class EnhancedClaudeService:
         with self._client.messages.stream(
             model=self._model,
             max_tokens=max_tokens,
-            temperature=0.2,
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
             timeout=timeout_seconds,
