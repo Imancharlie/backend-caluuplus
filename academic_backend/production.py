@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     "tokens",
     "caluu_map",
     "academia",
+    "deployments",
 ]
 
 MIDDLEWARE = [
