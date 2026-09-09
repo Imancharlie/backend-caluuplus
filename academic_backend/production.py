@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     "caluu_map",
     "academia",
     "deployments",
+    "advanced_features",
 ]
 
 MIDDLEWARE = [

@@ -59,9 +59,13 @@ def _pip(cwd, *args, log=None):
     return (proc.stdout + proc.stderr).strip()
 
 
-def _manage(base_dir, *args, log=None):
+def _manage(base_dir, *args, log=None, settings_module=None):
+    env = dict(os.environ)
+    if settings_module:
+        env["DJANGO_SETTINGS_MODULE"] = settings_module
     proc = subprocess.run(
-        [sys.executable, "manage.py", *args], cwd=base_dir, capture_output=True, text=True
+        [sys.executable, "manage.py", *args],
+        cwd=base_dir, env=env, capture_output=True, text=True,
     )
     if log is not None:
         for line in (proc.stdout + proc.stderr).strip().splitlines():
@@ -131,6 +135,13 @@ class Command(BaseCommand):
         health_url = options["health_url"] or os.getenv(
             "DEPLOY_HEALTH_URL", "http://127.0.0.1:8006/api/university-calendar/"
         )
+        # Settings module the gunicorn service actually boots with. All
+        # deploy-time manage.py calls must run against it so migrations and
+        # system checks match the app that will serve traffic (drift between
+        # settings.py and production.py used to break requests at import time).
+        deploy_settings = os.getenv(
+            "DEPLOY_SETTINGS_MODULE", "academic_backend.production"
+        )
 
         log_lines = []
 
@@ -157,7 +168,7 @@ class Command(BaseCommand):
         if "deployments_deployment" not in tables:
             log("Bootstrapping: applying pending deployments migrations...")
             try:
-                _manage(base_dir, "migrate", "--no-input", log=log)
+                _manage(base_dir, "migrate", "--no-input", log=log, settings_module=deploy_settings)
             except RuntimeError as exc:
                 raise CommandError(f"initial migration failed: {exc}")
 
@@ -216,12 +227,21 @@ class Command(BaseCommand):
                 _pip(base_dir, "install", "-r", "requirements.txt", log=log)
 
             log("Applying migrations...")
-            _manage(base_dir, "migrate", "--no-input", log=log)
+            _manage(
+                base_dir, "migrate", "--no-input", log=log,
+                settings_module=deploy_settings,
+            )
 
             log("Collecting static files...")
-            _manage(base_dir, "collectstatic", "--noinput", log=log)
+            _manage(
+                base_dir, "collectstatic", "--noinput", log=log,
+                settings_module=deploy_settings,
+            )
 
             if not options["skip_restart"]:
+                log(f"Running system check ({deploy_settings})...")
+                _manage(base_dir, "check", log=log, settings_module=deploy_settings)
+
                 log(f"Restarting {service}...")
                 _restart(service, log=log)
                 log(f"Waiting for health at {health_url}...")
