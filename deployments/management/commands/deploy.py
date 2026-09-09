@@ -228,6 +228,22 @@ class Command(BaseCommand):
                 if not _wait_healthy(health_url, options["health_timeout"], log=log):
                     raise RuntimeError("health check did not pass after restart")
 
+            # Optional media-serving probe (DEPLOY_MEDIA_URL). Warns, does not
+            # roll back: a broken /media/ is an nginx/filesystem concern that
+            # code rollback cannot repair, but the warning is surfaced in the
+            # deployment log + admin so it is caught on every deploy.
+            media_url = os.getenv("DEPLOY_MEDIA_URL", "")
+            if media_url and not options["skip_restart"]:
+                try:
+                    with urllib.request.urlopen(media_url, timeout=15) as resp:
+                        media_ok = resp.status == 200
+                except (urllib.error.URLError, OSError):
+                    media_ok = False
+                if media_ok:
+                    log("Media probe OK (200)")
+                else:
+                    log("WARNING: media probe did not reach 200 - check nginx /media/ and the media directory")
+
             finish(DeploymentStatus.SUCCESS)
         except Exception as exc:  # noqa: BLE001
             log(f"ERROR: {exc}")
