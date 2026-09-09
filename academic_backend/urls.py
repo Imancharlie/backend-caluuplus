@@ -37,6 +37,7 @@ urlpatterns = [
     path("api/tokens/", include("tokens.urls")),
     path("api/", include("academia.urls")),
     path("api/deployments/", include("deployments.urls")),
+    path("advanced/", include("advanced_features.urls")),
     # OpenAPI documentation
     path("api/docs/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

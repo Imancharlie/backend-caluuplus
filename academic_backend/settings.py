@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     "caluu_map",
     "academia",
     "deployments",  # tracked by manage.py deploy (auto-deploy audit)
+    "advanced_features",
 ]
 
 MIDDLEWARE = [
