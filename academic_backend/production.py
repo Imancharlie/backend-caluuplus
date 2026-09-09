@@ -260,7 +260,8 @@ CORS_ALLOW_METHODS = [
 ]
 
 # Allow media files to be accessed from frontend
-CORS_URLS_REGEX = r'^/(api|media)/.*$'
+# Note: /advanced/ (Mr. Caluu) lives OUTSIDE /api/, so include it explicitly.
+CORS_URLS_REGEX = r'^/(api|media|advanced)/.*$'
 
 # JWT Authentication
 REST_FRAMEWORK = {

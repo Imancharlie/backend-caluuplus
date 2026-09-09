@@ -227,12 +227,34 @@ class MrCaluuPublicViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = MrCaluuPublicSerializer
     permission_classes = [AllowAny]
 
+    def _resolve_username(self, request):
+        """Resolve the requesting user's first name for the {username} token.
+
+        Uses the authenticated JWT user's display name (first word = first name).
+        Falls back to 'friend' when unauthenticated or no name is available.
+        """
+        user = getattr(request, 'user', None)
+        if user and user.is_authenticated:
+            display_name = (getattr(user, 'display_name', '') or '').strip()
+            if display_name:
+                # First word of the display name is treated as the first name
+                first_name = display_name.split()[0]
+                return first_name
+        return 'friend'
+
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
+        username = self._resolve_username(request)
+
+        messages = serializer.data
+        for message in messages:
+            if message.get('text') and '{username}' in message['text']:
+                message['text'] = message['text'].replace('{username}', username)
+
         settings_obj = MrCaluuSettings.load()
         return Response({
-            'messages': serializer.data,
+            'messages': messages,
             'rotation_interval_seconds': settings_obj.rotation_interval_seconds or 1800,
         })
 

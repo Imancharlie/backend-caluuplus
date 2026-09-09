@@ -121,23 +121,35 @@ class SendNotificationSerializer(serializers.Serializer):
 class MrCaluuMessageSerializer(serializers.ModelSerializer):
     """Serializer for Mr. Caluu messages (admin CRUD)"""
 
+    image = serializers.ImageField(required=False, allow_null=True)
+    image_display = serializers.SerializerMethodField()
+
     class Meta:
         model = MrCaluuMessage
         fields = [
-            'id', 'text', 'image_url', 'links', 'display_order',
-            'is_active', 'created_at', 'updated_at'
+            'id', 'text', 'image', 'image_display', 'image_url', 'links',
+            'display_order', 'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_image_display(self, obj):
+        return obj.image_display
 
 
 class MrCaluuPublicSerializer(serializers.ModelSerializer):
     """Serializer for public Mr. Caluu messages"""
 
+    image_display = serializers.SerializerMethodField()
+
     class Meta:
         model = MrCaluuMessage
         fields = [
-            'id', 'text', 'image_url', 'links', 'display_order', 'is_active'
+            'id', 'text', 'image', 'image_display', 'image_url',
+            'links', 'display_order', 'is_active'
         ]
+
+    def get_image_display(self, obj):
+        return obj.image_display
 
 
 class MrCaluuSettingsSerializer(serializers.ModelSerializer):

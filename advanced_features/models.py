@@ -7,7 +7,13 @@ class MrCaluuMessage(models.Model):
     """Mr. Caluu motivational message"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     text = models.TextField(help_text="Message text with markdown-style bold (**bold**)")
-    image_url = models.URLField(blank=True, null=True)
+    image = models.ImageField(
+        upload_to='mr_caluu/',
+        blank=True,
+        null=True,
+        help_text="Uploaded image shown in the carousel"
+    )
+    image_url = models.URLField(blank=True, null=True, help_text="External image URL as a fallback")
     links = models.JSONField(default=list, blank=True)
     display_order = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
@@ -23,6 +29,15 @@ class MrCaluuMessage(models.Model):
     @property
     def text_preview(self):
         return self.text[:100] + '...' if len(self.text) > 100 else self.text
+
+    @property
+    def image_display(self):
+        """Return the effective image URL for display (uploaded image wins, falls back to external URL)."""
+        if self.image:
+            return self.image.url
+        if self.image_url:
+            return self.image_url
+        return None
 
 
 class MrCaluuSettings(models.Model):
