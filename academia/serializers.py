@@ -15,6 +15,12 @@ class AcademicEventSerializer(serializers.ModelSerializer):
     # which is prone to UTC-midnight parsing skew (`new Date("YYYY-MM-DD")`
     # is parsed as UTC, inflating the count by one in UTC+3).
     days_until = serializers.SerializerMethodField(read_only=True)
+    # Whole calendar days from today until the event's end (for multi-day
+    # events currently running, e.g. "5 days left"). None when no end date.
+    days_left = serializers.SerializerMethodField(read_only=True)
+    # True when the event spans today (start <= today <= end). Lets the
+    # frontend render "TODAY" / "Day N" state without re-deriving it.
+    is_ongoing = serializers.SerializerMethodField(read_only=True)
     # Timezone-qualified ISO instants (local midnight, UTC+3). Parsing these
     # yields the correct local start-of-day in any timezone-aware client.
     start_date_iso = serializers.SerializerMethodField(read_only=True)
@@ -24,7 +30,8 @@ class AcademicEventSerializer(serializers.ModelSerializer):
         model = AcademicEvent
         fields = (
             "id", "title", "type", "start_date", "end_date", "description",
-            "days_until", "start_date_iso", "end_date_iso",
+            "days_until", "days_left", "is_ongoing",
+            "start_date_iso", "end_date_iso",
         )
 
     @staticmethod
@@ -37,6 +44,18 @@ class AcademicEventSerializer(serializers.ModelSerializer):
         if not obj.start_date:
             return None
         return (obj.start_date - timezone.localdate()).days
+
+    def get_days_left(self, obj):
+        if not obj.end_date:
+            return None
+        return (obj.end_date - timezone.localdate()).days
+
+    def get_is_ongoing(self, obj):
+        if not obj.start_date:
+            return False
+        today = timezone.localdate()
+        end = obj.end_date or obj.start_date
+        return obj.start_date <= today <= end
 
     def get_start_date_iso(self, obj):
         return self._localized_midnight(obj.start_date)
