@@ -213,7 +213,7 @@ class Command(BaseCommand):
 
             if not options["skip_deps"]:
                 log("Syncing dependencies...")
-                _pip(base_dir, "install", "-r", "requirements.txt", "--quiet", log=log)
+                _pip(base_dir, "install", "-r", "requirements.txt", log=log)
 
             log("Applying migrations...")
             _manage(base_dir, "migrate", "--no-input", log=log)
