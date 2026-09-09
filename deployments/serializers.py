@@ -12,3 +12,10 @@ class DeploymentSerializer(serializers.ModelSerializer):
             "finished_at",
         ]
         read_only_fields = fields
+
+
+class DeploymentDetailSerializer(DeploymentSerializer):
+    """List fields plus the full deployment log (for the detail view)."""
+
+    class Meta(DeploymentSerializer.Meta):
+        fields = DeploymentSerializer.Meta.fields + ["log"]
