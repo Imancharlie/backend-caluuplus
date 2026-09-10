@@ -72,12 +72,20 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     """ViewSet for user notifications"""
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = None  # Disable default pagination for custom handling
     
     def get_queryset(self):
         queryset = Notification.objects.filter(recipient=self.request.user)
         
-        # Filter by read status
+        # Handle include_read parameter (for backward compatibility with mobile app)
+        include_read = self.request.query_params.get('include_read', 'false').lower() == 'true'
         is_read = self.request.query_params.get('is_read')
+        
+        # If include_read is false and is_read is not specified, only show unread
+        if not include_read and is_read is None:
+            queryset = queryset.filter(read_at__isnull=True)
+        
+        # Filter by read status if explicitly specified
         if is_read is not None:
             if is_read.lower() == 'true':
                 queryset = queryset.filter(read_at__isnull=False)
@@ -90,6 +98,28 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(type=notification_type)
         
         return queryset.order_by('-created_at')
+    
+    def list(self, request, *args, **kwargs):
+        """Override list to support custom pagination and response format"""
+        queryset = self.get_queryset()
+        
+        # Handle pagination manually for mobile app compatibility
+        page_size = int(request.query_params.get('page_size', 50))
+        page = int(request.query_params.get('page', 1))
+        
+        total_count = queryset.count()
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        
+        paginated_queryset = queryset[start_index:end_index]
+        serializer = self.get_serializer(paginated_queryset, many=True)
+        
+        return Response({
+            'count': total_count,
+            'results': serializer.data,
+            'next': end_index < total_count,
+            'previous': page > 1,
+        })
     
     @action(detail=True, methods=['post'])
     def mark_as_read(self, request, pk=None):
