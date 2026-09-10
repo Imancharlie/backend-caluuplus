@@ -66,6 +66,12 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
             user=self.request.user
         )
         return preference
+    
+    def list(self, request, *args, **kwargs):
+        """Override list to return the user's preferences (single object)"""
+        preference = self.get_object()
+        serializer = self.get_serializer(preference)
+        return Response(serializer.data)
 
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
