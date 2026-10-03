@@ -1,0 +1,227 @@
+{% comment %}
+Mr. Caluu console sign-in. Visually matches api/templates/dashboard/login.html so
+the admin area feels like one product.
+{% endcomment %}<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in | Mr. Caluu Console</title>
+    <style>
+        :root {
+            --accent: #00bfff;
+            --accent-hover: #00d4ff;
+            --accent-glow: rgba(0, 191, 255, 0.4);
+            --danger: #ff4757;
+            --transition-normal: 0.25s ease;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #0a0a14;
+            --bg-secondary: #12121e;
+            --bg-card: #1a1a2e;
+            --bg-input: #0d0d18;
+            --border: #2a2a40;
+            --text: #f0f0f5;
+            --text-muted: #6a6a80;
+            --shadow: rgba(0, 0, 0, 0.5);
+        }
+
+        [data-theme="light"] {
+            --bg-primary: #f5f7fa;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --bg-input: #f0f2f5;
+            --border: #e0e4e8;
+            --text: #1a1a2e;
+            --text-muted: #8a8a9a;
+            --shadow: rgba(0, 0, 0, 0.08);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            transition: background var(--transition-normal), color var(--transition-normal);
+        }
+
+        [data-theme="dark"] body {
+            background-image:
+                radial-gradient(ellipse at 20% 80%, rgba(0, 191, 255, 0.10) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(22, 33, 62, 0.5) 0%, transparent 50%);
+        }
+
+        .card {
+            width: 100%;
+            max-width: 420px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 36px 32px;
+            box-shadow: 0 12px 40px var(--shadow);
+        }
+
+        .brand { text-align: center; margin-bottom: 28px; }
+
+        .avatar {
+            width: 62px; height: 62px;
+            margin: 0 auto 16px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent), #7b5cff);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 30px;
+            box-shadow: 0 0 22px var(--accent-glow);
+        }
+
+        .brand h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.3px; }
+        .brand p { color: var(--text-muted); font-size: 13px; margin-top: 5px; }
+
+        .alert {
+            background: rgba(255, 71, 87, 0.12);
+            border: 1px solid rgba(255, 71, 87, 0.35);
+            color: var(--danger);
+            padding: 11px 14px;
+            border-radius: 9px;
+            font-size: 13px;
+            margin-bottom: 18px;
+            line-height: 1.5;
+        }
+
+        .field { margin-bottom: 16px; }
+
+        label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            margin-bottom: 7px;
+        }
+
+        input[type="email"], input[type="password"] {
+            width: 100%;
+            padding: 12px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(0, 191, 255, 0.18);
+        }
+
+        button {
+            width: 100%;
+            padding: 13px;
+            background: linear-gradient(135deg, var(--accent), #0090d4);
+            color: #04121c;
+            border: none;
+            border-radius: 9px;
+            font-size: 15px;
+            font-weight: 700;
+            font-family: inherit;
+            cursor: pointer;
+            margin-top: 6px;
+            transition: transform var(--transition-normal), filter var(--transition-normal);
+        }
+
+        button:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        button:active { transform: translateY(0); }
+        button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+        .foot {
+            text-align: center;
+            margin-top: 22px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .foot a { color: var(--accent); text-decoration: none; }
+        .foot a:hover { text-decoration: underline; }
+
+        .theme-toggle {
+            position: fixed; top: 18px; right: 18px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text);
+            width: 38px; height: 38px;
+            border-radius: 9px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            * { transition: none !important; }
+        }
+    </style>
+</head>
+<body>
+    <button class="theme-toggle" type="button" id="themeToggle" title="Toggle theme" aria-label="Toggle colour theme">&#9681;</button>
+
+    <div class="card">
+        <div class="brand">
+            <div class="avatar" aria-hidden="true">&#128172;</div>
+            <h1>Mr. Caluu Console</h1>
+            <p>Superuser access required</p>
+        </div>
+
+        {% if error %}
+            <div class="alert" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" autocomplete="on" novalidate>
+            {% csrf_token %}
+            <div class="field">
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" required autofocus
+                       autocomplete="username" placeholder="you@kodin.co.tz">
+            </div>
+            <div class="field">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required
+                       autocomplete="current-password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;">
+            </div>
+            <button type="submit" id="submitBtn">Sign in</button>
+        </form>
+
+        <div class="foot"><a href="/admin/">Go to Django admin</a></div>
+    </div>
+
+    <script>
+        (function () {
+            var root = document.documentElement;
+            var stored = null;
+            try { stored = localStorage.getItem('caluu_theme'); } catch (e) {}
+            if (stored) { root.setAttribute('data-theme', stored); }
+
+            document.getElementById('themeToggle').addEventListener('click', function () {
+                var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+                root.setAttribute('data-theme', next);
+                try { localStorage.setItem('caluu_theme', next); } catch (e) {}
+            });
+
+            // Guard against a double-submit creating two sessions.
+            var form = document.querySelector('form');
+            var btn = document.getElementById('submitBtn');
+            form.addEventListener('submit', function () {
+                btn.disabled = true;
+                btn.textContent = 'Signing in...';
+            });
+        })();
+    </script>
+</body>
+</html>

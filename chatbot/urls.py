@@ -7,12 +7,19 @@ from .views import (
     suggestions_list, approve_suggestion, reject_suggestion, knowledge_gaps,
     join_conversation, leave_conversation, draft_reply, admin_send,
 )
+from . import console_views
 
 
 router = DefaultRouter()
 router.register(r"conversations", ChatbotViewSet, basename="chatbot-conversation")
 
 urlpatterns = [
+    # --- Template-based superuser console (see chatbot/console_views.py) ---
+    # Lives at the app root so the page can call /api/chatbot/conversations/...
+    path("console/login/", console_views.console_login, name="chatbot-console-login"),
+    path("console/logout/", console_views.console_logout, name="chatbot-console-logout"),
+    path("console/", console_views.console_home, name="chatbot-console"),
+
     path("", include(router.urls)),
     path("quick/", quick_chat, name="chatbot-quick"),
     path("stats/", chat_stats, name="chatbot-stats"),
