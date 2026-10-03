@@ -29,7 +29,9 @@ class AnthropicService:
             )
 
         self.client = Anthropic(api_key=api_key)
-        self.model = "claude-3-haiku-20240307"
+        # Read the model from settings so it can never drift out of sync.
+        # Note: claude-3-* names 404 on this workspace ("model: claude-3-haiku").
+        self.model = getattr(settings, "ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     
     def get_response(self, message: str, system_prompt: str = "") -> str:
         """Get a simple response from Claude"""
@@ -37,7 +39,6 @@ class AnthropicService:
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=1000,
-                temperature=0.2,
                 system=system_prompt,
                 messages=[{
                     "role": "user",

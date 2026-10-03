@@ -497,6 +497,14 @@ class AdminRuleUpdateView(APIView):
         serializer.save()
         return Response(serializer.data)
 
+    def delete(self, request, pk):
+        rule = RewardRule.objects.filter(pk=pk).first() or ConsumptionRule.objects.filter(pk=pk).first()
+        if rule is None:
+            return Response({"error": "Rule not found", "code": "not_found"},
+                            status=status.HTTP_404_NOT_FOUND)
+        rule.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class AdminPackageView(APIView):
     """
@@ -532,6 +540,14 @@ class AdminPackageUpdateView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+    def delete(self, request, pk):
+        package = TokenPackage.objects.filter(pk=pk).first()
+        if package is None:
+            return Response({"error": "Package not found", "code": "not_found"},
+                            status=status.HTTP_404_NOT_FOUND)
+        package.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class AdminRedemptionListView(APIView):

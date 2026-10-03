@@ -38,7 +38,9 @@ class EnhancedClaudeService:
         if not api_key:
             raise RuntimeError("Anthropic API key not configured. Set ANTHROPIC_API_KEY in settings or environment.")
 
-        self._model = "claude-3-haiku-20240307"
+        # Read the model from settings so it can never drift out of sync.
+        # Note: claude-3-* names 404 on this workspace ("model: claude-3-haiku").
+        self._model = getattr(settings, "ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         self._client = Anthropic(api_key=api_key)
 
     def build_student_context(self, user) -> str:

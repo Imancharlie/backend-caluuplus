@@ -207,12 +207,29 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 # not covered by the university knowledge base. Requires a key/tier that permits
 # the google_search tool; keep off until verified to avoid 4xx errors.
 GEMINI_ENABLE_WEB_SEARCH = os.getenv("GEMINI_ENABLE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
+# Environment variable is the ONLY source of the key. A literal fallback used to
+# live here and was committed to git in every single commit (45/45), which is
+# how a dead Anthropic key ended up in the repo's entire history. There is no
+# sensible default: an empty key makes the chatbot fail fast and loudly instead
+# of silently calling Anthropic with something invalid.
+# Production uses academic_backend/production.py, which requires the env var.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Anthropic model used by Mr. Caluu.
+# IMPORTANT: "claude-3-haiku" (and every other claude-3-* name) returns
+# 404 {"type":"not_found_error","message":"model: claude-3-haiku"} for this
+# workspace -- those models are not provisioned on this account. Verified with
+# GET /v1/models: this key sees claude-haiku-4-5-*, claude-sonnet-4-5/4-6,
+# claude-opus-4-5/4-6 and the 5.x series only.
+# claude-haiku-4-5 is the direct successor to claude-3-haiku: same
+# cost/latency tier, so it is the default. Verify with:
+#   curl https://api.anthropic.com/v1/models -H "x-api-key: $ANTHROPIC_API_KEY"
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
-# Pricing configuration 
-# Cost per token in USD for Anthropic Claude (Haiku) – adjust as needed
-ANTHROPIC_INPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_INPUT_USD_PER_TOKEN", "0.00000025"))
-ANTHROPIC_OUTPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_OUTPUT_USD_PER_TOKEN", "0.00000125"))
+# Pricing configuration
+# Cost per token in USD for Anthropic Claude (Haiku 4.5: $1/Mtok in, $5/Mtok out)
+# -- adjust as needed if you switch ANTHROPIC_MODEL to a Sonnet/Opus tier.
+ANTHROPIC_INPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_INPUT_USD_PER_TOKEN", "0.000001"))
+ANTHROPIC_OUTPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_OUTPUT_USD_PER_TOKEN", "0.000005"))
 USD_TO_TSH_RATE = float(os.getenv("USD_TO_TSH_RATE", "2700"))
 
 # Anthropic API Rate Limiting Configuration

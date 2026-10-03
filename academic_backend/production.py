@@ -22,7 +22,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # below (GEMINI_API_KEY, ANTHROPIC_API_KEY, etc.) see values configured there.
 try:
     from dotenv import load_dotenv
-    load_dotenv(BASE_DIR / '.env')
+    # Try loading from .env first, then .env.production as fallback
+    env_loaded = load_dotenv(BASE_DIR / '.env')
+    if not env_loaded:
+        load_dotenv(BASE_DIR / '.env.production')
 except Exception:
     pass
 
@@ -200,11 +203,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_ENABLE_WEB_SEARCH = os.getenv("GEMINI_ENABLE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# claude-3-* names return 404 on this Anthropic workspace; claude-haiku-4-5 is
+# the successor to claude-3-haiku. Verify with:
+#   curl https://api.anthropic.com/v1/models -H "x-api-key: $ANTHROPIC_API_KEY"
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
-# Pricing configuration 
-# Cost per token in USD for Anthropic Claude (Haiku) – adjust as needed
-ANTHROPIC_INPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_INPUT_USD_PER_TOKEN", "0.00000025"))
-ANTHROPIC_OUTPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_OUTPUT_USD_PER_TOKEN", "0.00000125"))
+# Pricing configuration
+# Cost per token in USD for Anthropic Claude (Haiku 4.5: $1/Mtok in, $5/Mtok out)
+# -- adjust as needed if you switch ANTHROPIC_MODEL to a Sonnet/Opus tier.
+ANTHROPIC_INPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_INPUT_USD_PER_TOKEN", "0.000001"))
+ANTHROPIC_OUTPUT_USD_PER_TOKEN = float(os.getenv("ANTHROPIC_OUTPUT_USD_PER_TOKEN", "0.000005"))
 USD_TO_TSH_RATE = float(os.getenv("USD_TO_TSH_RATE", "2700"))
 
 # Anthropic API Rate Limiting Configuration
@@ -258,6 +266,9 @@ CORS_ALLOW_METHODS = [
     'POST',
     'PUT',
 ]
+
+# Disable automatic slash appending to prevent CORS redirect issues
+APPEND_SLASH = False
 
 # Allow media files to be accessed from frontend
 # Note: /advanced/ (Mr. Caluu) lives OUTSIDE /api/, so include it explicitly.
