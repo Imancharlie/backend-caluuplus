@@ -110,6 +110,15 @@ ENV/
 env.bak/
 venv.bak/
 
+# Secrets — these must never be committed. Only the *.example templates are
+# tracked, so a real key or private key cannot be added by accident.
+.env.*
+!.env.example
+firebase_credentials.json
+firebase-credentials.json
+firebase_service_account.json
+*service-account*.json
+
 # Spyder project settings
 .spyderproject
 .spyproject
