@@ -430,6 +430,9 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@caluuplus.com")
 BACKUP_ROOT = Path(os.getenv("BACKUP_ROOT", BASE_DIR / "backups_storage"))
+# See the note in production.py: age-based retention does not bound disk usage
+# when something snapshots the database on a short interval.
+BACKUP_MAX_COUNT = int(os.getenv("BACKUP_MAX_COUNT", "12"))
 BACKUP_NOTIFY_EMAIL = os.getenv("BACKUP_NOTIFY_EMAIL", "")
 OPPORTUNITY_REVIEW_NOTIFY_EMAIL = os.getenv(
     "OPPORTUNITY_REVIEW_NOTIFY_EMAIL", "kodinsoftwares@gmail.com"

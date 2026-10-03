@@ -34,10 +34,38 @@ def _get_backup_root() -> Path:
     return root
 
 
-def _cleanup_old_backups(retention_days: int) -> None:
+def _cleanup_old_backups(retention_days: int, max_count: Optional[int] = None) -> None:
+    """Prune backups by age, then by count.
+
+    Age alone is not a bound. The auto-deploy takes a snapshot on every run, so
+    a 60s timer produced 1440 snapshots a day that all share the same
+    created_at date -- nothing aged out until the following day, by which point
+    a 16MB database had filled the disk. The count cap makes the total number of
+    retained snapshots bounded regardless of how often backups are taken.
+    """
     cutoff = timezone.now() - timedelta(days=retention_days)
     stale_records = BackupRecord.objects.filter(created_at__lt=cutoff)
     for record in stale_records:
+        try:
+            path = Path(record.file_path)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+        record.delete()
+
+    if max_count is None:
+        max_count = getattr(settings, "BACKUP_MAX_COUNT", 20)
+    try:
+        max_count = int(max_count)
+    except (TypeError, ValueError):
+        return
+    if max_count <= 0:
+        return
+
+    # Newest first, so the survivors are always the most recent snapshots.
+    surplus = BackupRecord.objects.order_by("-created_at")[max_count:]
+    for record in surplus:
         try:
             path = Path(record.file_path)
             if path.exists():

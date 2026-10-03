@@ -417,11 +417,19 @@ class FirebaseLoginView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        id_token = request.data.get("token")
+        # Accept either key. The Firebase web SDK names it getIdToken(), most
+        # React Native wrappers expose it as idToken, and the documented
+        # contract here is "token". Reading only one of them turns a perfectly
+        # good sign-in into "server unreachable".
+        id_token = request.data.get("token") or request.data.get("id_token")
 
         if not id_token:
             return Response(
-                {"error": "Authentication failed", "message": "Firebase ID token is required. Please sign in with Google first."},
+                {
+                    "error": "Authentication failed",
+                    "code": "missing_token",
+                    "message": "Firebase ID token is required. Please sign in with Google first.",
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -435,7 +443,11 @@ class FirebaseLoginView(APIView):
                 firebase_admin.get_app()
             except ValueError:
                 return Response(
-                    {"error": "Authentication temporarily unavailable", "message": "Please try again later or contact support if the issue persists."},
+                    {
+                        "error": "Authentication temporarily unavailable",
+                        "code": "firebase_unavailable",
+                        "message": "Please try again later or contact support if the issue persists.",
+                    },
                     status=status.HTTP_503_SERVICE_UNAVAILABLE
                 )
 
@@ -528,6 +540,17 @@ class FirebaseLoginView(APIView):
             # Generate JWT tokens for the user
             refresh = RefreshToken.for_user(user)
 
+            # user_basic_details caches the profile for 60s under a per-user
+            # key. A Google sign-in can just have changed display_name or
+            # profile_picture, so drop that entry now rather than let the app
+            # render the previous values and look like it logged in the wrong
+            # person.
+            try:
+                from django.core.cache import cache
+                cache.delete(f"user_details_{user.id}")
+            except Exception:
+                pass
+
             # Record login activity for analytics
             record_login_activity(user, request, login_type='firebase', success=True)
 
@@ -562,21 +585,36 @@ class FirebaseLoginView(APIView):
             })
 
         except Exception as e:
-            # Handle all Firebase-related exceptions with user-friendly messages
+            # Handle all Firebase-related exceptions with user-friendly messages.
+            # Every branch carries a machine-readable "code" so the app can tell
+            # "your session expired, sign in again" apart from "the server is
+            # down" and stop showing a connectivity message for an auth problem.
             error_message = str(e).lower()
             if "expired" in error_message:
                 return Response(
-                    {"error": "Session expired", "message": "Your Google sign-in session has expired. Please sign in again."},
+                    {
+                        "error": "Session expired",
+                        "code": "token_expired",
+                        "message": "Your Google sign-in session has expired. Please sign in again.",
+                    },
                     status=status.HTTP_401_UNAUTHORIZED
                 )
             elif "invalid" in error_message or "token" in error_message:
                 return Response(
-                    {"error": "Authentication failed", "message": "Invalid authentication token. Please try signing in with Google again."},
+                    {
+                        "error": "Authentication failed",
+                        "code": "invalid_token",
+                        "message": "Invalid authentication token. Please try signing in with Google again.",
+                    },
                     status=status.HTTP_401_UNAUTHORIZED
                 )
             else:
                 return Response(
-                    {"error": "Authentication failed", "message": "Unable to authenticate with Google. Please try again or contact support."},
+                    {
+                        "error": "Authentication failed",
+                        "code": "auth_failed",
+                        "message": "Unable to authenticate with Google. Please try again or contact support.",
+                    },
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -608,39 +646,45 @@ def verify_token(request):
 @permission_classes([permissions.AllowAny])
 def refresh_token(request):
     """
-    Refresh access token ufsing refresh token.
-    Expected payload: {"reresh": "<refresh_token>"}
+    Refresh an access token using a refresh token.
+    Accepts either {"refresh": ...} or {"refresh_token": ...}.
     """
     import logging
     logger = logging.getLogger(__name__)
-    
-    refresh_token_str = request.data.get('refresh')
-    
+
+    # Both key spellings are in use by the app; reading only "refresh" made a
+    # perfectly good token look absent and forced a needless re-login.
+    refresh_token_str = request.data.get('refresh') or request.data.get('refresh_token')
+
     if not refresh_token_str:
         return Response({
             'error': 'Refresh token is required',
+            'code': 'missing_refresh_token',
             'message': 'Please provide a refresh token'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         from rest_framework_simplejwt.tokens import RefreshToken
         refresh = RefreshToken(refresh_token_str)
-        
+
         # Generate new access token
         new_access_token = str(refresh.access_token)
-        
+
         logger.info(f"Token refreshed successfully")
-        
+
         return Response({
             'access_token': new_access_token,
             'token_type': 'Bearer',
             'message': 'Token refreshed successfully'
         }, status=status.HTTP_200_OK)
-        
+
     except Exception as e:
         logger.warning(f"Token refresh failed: {str(e)}")
+        # 'code' lets the app clear its stored session and prompt for a fresh
+        # sign-in instead of retrying the same dead token in a loop.
         return Response({
             'error': 'Invalid refresh token',
+            'code': 'refresh_invalid',
             'message': 'The refresh token is invalid or expired. Please login again.'
         }, status=status.HTTP_401_UNAUTHORIZED)
 

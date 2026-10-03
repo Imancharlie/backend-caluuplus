@@ -62,7 +62,13 @@ urlpatterns = [
     # Authentication endpoints
     path('auth/register/', views.register, name='register'),
     path('auth/login/', views.login, name='login'),
+    # Registered under BOTH spellings. production.py sets APPEND_SLASH=False, so
+    # there is no redirect to paper over a mismatch -- a client built against the
+    # slashless path got a hard 404 and the app reported it as "server
+    # unreachable". Both variants hit the same view so a stale app build keeps
+    # working instead of failing opaquely.
     path('auth/firebase-login/', views.FirebaseLoginView.as_view(), name='firebase-login'),
+    path('auth/firebase-login', views.FirebaseLoginView.as_view(), name='firebase-login-noslash'),
     path('auth/change-password/', views.change_password, name='change-password'),
     path('auth/verify/', views.verify_token, name='verify-token'),
     path('auth/refresh/', views.refresh_token, name='refresh-token'),
