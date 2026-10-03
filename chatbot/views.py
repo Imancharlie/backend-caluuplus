@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Conversation, Message, ChatHistory
-from .serializers import ConversationSerializer, MessageSerializer, ChatHistorySerializer
+from .serializers import ConversationSerializer, ConversationListSerializer, MessageSerializer, ChatHistorySerializer
 from .enhanced_service import EnhancedClaudeService
 from .vector_service import VectorSearchService
 from .anthropic_service import AnthropicService
@@ -26,6 +26,10 @@ re = regex_module
 # Eliminates per-request client handshake + model-load overhead.
 _enhanced_service: EnhancedClaudeService | None = None
 _vector_service: VectorSearchService | None = None
+
+# GET /conversations/active/ is polled whenever the chat panel opens, so it
+# returns only the most recent page of messages instead of the whole thread.
+ACTIVE_MESSAGE_PAGE = 50
 
 
 def get_enhanced_service() -> EnhancedClaudeService:
@@ -47,8 +51,16 @@ class ChatbotViewSet(viewsets.ModelViewSet):
     serializer_class = ConversationSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return ConversationListSerializer
+        return ConversationSerializer
+
     def get_queryset(self):
-        return Conversation.objects.filter(user=self.request.user)
+        queryset = Conversation.objects.filter(user=self.request.user)
+        if self.action == 'list':
+            return queryset
+        return queryset.prefetch_related('messages')
 
     def create(self, request, *args, **kwargs):
         title = request.data.get("title") or "New Conversation"
@@ -237,6 +249,40 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         for nav in nav_results:
                             nav_lines.append(f"- {nav['name']}: {nav['description']} [LINK:{nav['route']}]")
                         navigation_context = "\n".join(nav_lines)
+
+                # Entity-specific searches (articles, opportunities, calendar events)
+                if primary_intent == 'articles':
+                    article_context = enhanced_service.search_articles(sanitized_message, university_id)
+                    if article_context:
+                        rag_context += f"\n\nRELEVANT ARTICLES:\n{article_context}"
+                        logger.info(f"📰 ARTICLES SEARCH USED")
+
+                elif primary_intent == 'opportunities':
+                    opp_context = enhanced_service.search_opportunities(sanitized_message, university_id)
+                    if opp_context:
+                        rag_context += f"\n\nRELEVANT OPPORTUNITIES:\n{opp_context}"
+                        logger.info(f"💼 OPPORTUNITIES SEARCH USED")
+
+                elif primary_intent == 'calendar_events':
+                    calendar_context = enhanced_service.search_calendar_events(sanitized_message, university_id)
+                    if calendar_context:
+                        rag_context += f"\n\nRELEVANT CALENDAR EVENTS:\n{calendar_context}"
+                        logger.info(f"📅 CALENDAR EVENTS SEARCH USED")
+
+                # "What is coming up / what's next" classifies as plain 'faq',
+                # so the calendar branch above never ran for those. Read it
+                # whenever the intent layer flagged the query as date-shaped.
+                elif intent_info.get('is_calendar') or intent_info.get('wants_upcoming'):
+                    calendar_context = enhanced_service.search_calendar_events(
+                        sanitized_message, university_id,
+                        top_k=6 if intent_info.get('wants_upcoming') else 3,
+                    )
+                    if calendar_context:
+                        rag_context += (
+                            "\n\nUPCOMING ACADEMIC DATES (from the university "
+                            f"calendar):\n{calendar_context}"
+                        )
+                        logger.info("📅 UPCOMING DATES INJECTED")
             except Exception as e:
                 logger.warning(f"RAG/navigation search failed for user {request.user.id}: {str(e)}")
 
@@ -249,6 +295,14 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 navigation_context,
                 intent_info=intent_info,
             )
+
+            # Add upcoming events alert naturally
+            try:
+                upcoming_alert = enhanced_service.get_upcoming_events_alert(request.user)
+                if upcoming_alert:
+                    ai_response.text = f"{ai_response.text}\n\n{upcoming_alert}"
+            except Exception as e:
+                logger.debug(f"Failed to add upcoming events alert: {e}")
 
             # Update analytics (separate, best-effort)
             try:
@@ -269,7 +323,20 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                     tokens_used=ai_response.tokens_used,
                     cost_tsh=ai_response.cost_tsh
                 )
-                conversation.save(update_fields=["updated_at"])
+
+                # Name the conversation after its first substantive exchange.
+                # A greeting produces no title, so the title is set on the first
+                # message that actually asks something.
+                updates = ["updated_at"]
+                if not conversation.title or conversation.title == "New Conversation":
+                    derived = enhanced_service.summarize_conversation_title(
+                        sanitized_message, ai_response.text
+                    )
+                    if derived:
+                        conversation.title = derived
+                        updates.append("title")
+                        logger.info(f"Conversation titled: {derived!r}")
+                conversation.save(update_fields=updates)
 
             logger.info(f"AI response saved for user {request.user.id}, tokens: {ai_response.tokens_used}")
 
@@ -324,6 +391,14 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 )
         except Exception as e:
             logger.debug(f"Knowledge suggestion capture skipped: {e}")
+
+        # get_queryset() prefetches 'messages', so self.get_object() handed us a
+        # conversation whose related cache was filled *before* this request wrote
+        # the user turn and the assistant reply. Serialising that stale cache
+        # returns "messages": [] -- HTTP 200 with no content -- which made any
+        # client rendering response.messages[-1] spin forever. Dropping the
+        # cache makes the serializer re-query and see both new rows.
+        conversation._prefetched_objects_cache = {}
 
         serializer = ConversationSerializer(conversation)
         total_time = time.time() - start_time
@@ -429,6 +504,22 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                             for nav in nav_results:
                                 nav_lines.append(f"- {nav['name']}: {nav['description']} [LINK:{nav['route']}]")
                             navigation_context = "\n".join(nav_lines)
+
+                    # Entity-specific searches (articles, opportunities, calendar events)
+                    if primary_intent == 'articles':
+                        article_context = enhanced_service.search_articles(sanitized_message, university_id)
+                        if article_context:
+                            rag_context += f"\n\nRELEVANT ARTICLES:\n{article_context}"
+
+                    elif primary_intent == 'opportunities':
+                        opp_context = enhanced_service.search_opportunities(sanitized_message, university_id)
+                        if opp_context:
+                            rag_context += f"\n\nRELEVANT OPPORTUNITIES:\n{opp_context}"
+
+                    elif primary_intent == 'calendar_events':
+                        calendar_context = enhanced_service.search_calendar_events(sanitized_message, university_id)
+                        if calendar_context:
+                            rag_context += f"\n\nRELEVANT CALENDAR EVENTS:\n{calendar_context}"
                 except Exception as e:
                     logger.warning(f"RAG search failed in stream: {e}")
 
@@ -452,6 +543,14 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         }
                         full_text = event['reply']  # canonical cleaned text
 
+                # Add upcoming events alert naturally
+                try:
+                    upcoming_alert = enhanced_service.get_upcoming_events_alert(request.user)
+                    if upcoming_alert:
+                        full_text = f"{full_text}\n\n{upcoming_alert}"
+                except Exception as e:
+                    logger.debug(f"Failed to add upcoming events alert in stream: {e}")
+
                 # Save message (short transaction)
                 with transaction.atomic():
                     assistant_msg = Message.objects.create(
@@ -461,7 +560,18 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         tokens_used=metadata.get('tokens_used', 0),
                         cost_tsh=metadata.get('cost_tsh', 0.0),
                     )
-                    conversation.save(update_fields=["updated_at"])
+
+                    # Same titling rule as the non-streaming path: name the
+                    # conversation after its first substantive message.
+                    updates = ["updated_at"]
+                    if not conversation.title or conversation.title == "New Conversation":
+                        derived = enhanced_service.summarize_conversation_title(
+                            sanitized_message, full_text
+                        )
+                        if derived:
+                            conversation.title = derived
+                            updates.append("title")
+                    conversation.save(update_fields=updates)
 
                 # Memory updates (best-effort)
                 try:
@@ -493,6 +603,32 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         "i don't know", "i'm not sure", "i am not sure", "not certain",
                         "i couldn't find", "i can't find", "i cannot find", "no information",
                         "don't have information", "not in the knowledge base", "i can't answer",
+                        "i don't have that", "i don't have access to", "unavailable",
+                        "i'm unable to", "i am unable to", "i lack", "missing", "absent",
+                        "not available", "not provided", "no data", "no details",
+                        "i don't have details", "i don't have the details", "unclear",
+                        "uncertain", "unsure", "ambiguous", "not specified", "not stated",
+                        "i don't have that information", "i don't have that info",
+                        "i don't have access to that", "i don't have the answer",
+                        "i don't have the answer to that", "i don't know that",
+                        "i don't know about that", "i'm not aware of", "i am not aware of",
+                        "i don't have any information on", "i don't have any info on",
+                        "there's no information", "there is no information", "there's no info",
+                        "there is no info", "i cannot provide", "i can't provide",
+                        "i'm not able to provide", "i am not able to provide",
+                        "not mentioned", "not documented", "not recorded", "not listed",
+                        "i don't see", "i can't see", "i cannot see", "i don't have record",
+                        "i don't have records", "no record", "no records", "not found",
+                        "i couldn't locate", "i can't locate", "i cannot locate",
+                        "i don't have knowledge of", "i lack knowledge of", "unknown",
+                        "i don't have clarity on", "i lack clarity on", "i'm unclear about",
+                        "i am unclear about", "i don't have specifics", "i lack specifics",
+                        "i don't have the specifics", "i lack the specifics", "i don't have context",
+                        "i lack context", "i don't have the context", "i lack the context",
+                        "i don't have that detail", "i lack that detail", "i don't have those details",
+                        "i lack those details", "i don't have that data", "i lack that data",
+                        "i don't have those data", "i lack those data", "i don't have that fact",
+                        "i lack that fact", "i don't have those facts", "i lack those facts"
                     ]
                     low_confidence = any(p in full_text.lower() for p in hedge_phrases)
 
@@ -566,7 +702,28 @@ class ChatbotViewSet(viewsets.ModelViewSet):
         convo = Conversation.objects.filter(user=request.user, is_active=True).order_by("-updated_at").first()
         if not convo:
             convo = Conversation.objects.create(user=request.user, title="New Conversation", is_active=True)
-        return Response(ConversationSerializer(convo).data)
+
+        # This endpoint is polled on every chat open, so it used to serialise the
+        # entire message history every time -- 27KB for a 65-message thread and
+        # growing without bound. Send the most recent page plus a total count so
+        # the UI can still show "load earlier".
+        messages = list(
+            convo.messages.order_by("-timestamp")[:ACTIVE_MESSAGE_PAGE]
+        )[::-1]
+        return Response({
+            "id": convo.id,
+            "title": convo.title,
+            "is_active": convo.is_active,
+            "created_at": convo.created_at,
+            "updated_at": convo.updated_at,
+            "total_tokens": convo.total_tokens,
+            "total_input_tokens": convo.total_input_tokens,
+            "total_output_tokens": convo.total_output_tokens,
+            "total_cost_tsh": convo.total_cost_tsh,
+            "messages": MessageSerializer(messages, many=True).data,
+            "total_messages": convo.messages.count(),
+            "messages_truncated": convo.messages.count() > len(messages),
+        })
 
     @action(detail=True, methods=["post"], url_path="archive")
     def archive(self, request, pk=None):
@@ -660,19 +817,33 @@ def approve_suggestion(request, pk):
     suggestion.reviewed_at = timezone.now()
     suggestion.save()
 
-    title = request.data.get('title', suggestion.query_text[:100])
+    title = request.data.get('title') or suggestion.query_text[:100]
     content = request.data.get('content', suggestion.response_text)
     category = request.data.get('category', 'faq')
     university_id = request.data.get('university_id')
+    # An approved suggestion becomes real, searchable knowledge immediately.
+    # Its authority is whatever the reviewer declares -- a student-leader
+    # clarification must stay labelled as such once it is in the knowledge base.
+    source_level = request.data.get('source_level', 'general')
+    if source_level not in dict(KnowledgeDocument.SOURCE_LEVELS):
+        source_level = 'general'
+    source_attribution = request.data.get('source_attribution', '') or ''
 
     doc = KnowledgeDocument.objects.create(
         title=title,
         content=content,
         category=category,
         university_id=university_id or None,
+        source_level=source_level,
+        source_attribution=source_attribution,
         is_active=True,
     )
-    logger.info(f"Knowledge document created from suggestion {suggestion.id}: {doc.title}")
+    suggestion.source_level = source_level
+    suggestion.save(update_fields=["source_level"])
+    logger.info(
+        f"Knowledge document created from suggestion {suggestion.id}: "
+        f"{doc.title} (source_level={source_level})"
+    )
 
     # Precompute embedding so the approved doc is immediately searchable
     # (cheap, lazy; no-op if the semantic model is unavailable).

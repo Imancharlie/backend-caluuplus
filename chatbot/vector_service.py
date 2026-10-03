@@ -172,17 +172,25 @@ class VectorSearchService:
             return 0.0
 
     def _batch_semantic_scores(self, query_vec, docs) -> Dict[str, float]:
-        """Vectorized cosine similarity against every stored doc embedding.
+        """Cosine similarity of the query against every knowledge document.
 
-        Returns ``{doc_id: cosine_score}`` for all documents that have a
-        precomputed embedding (documents without one are left out so the caller
-        keeps keyword-only scoring for them). Runs in a single numpy pass —
-        milliseconds even for a large knowledge base.
+        Uses the precomputed ``embedding`` column where present (a single
+        vectorized numpy pass), and falls back to encoding on the fly for any
+        document whose embedding has never been built.
+
+        That fallback matters: ``embedding`` is NULL until
+        ``manage.py rebuild_embeddings`` runs, and a doc without one used to score
+        a flat 0.0. Meanwhile articles and opportunities are *always* live-scored,
+        so an unrelated article could outrank an exact-title match sitting in the
+        knowledge base -- which is how "who is the founder of caluu+" was answered
+        with "I don't have that info" while the answer sat in the database.
         """
         if query_vec is None or NUMPY_AVAILABLE is False or np is None:
             return {}
+
         arrays = []
         doc_ids = []
+        missing = []
         for doc in docs:
             if isinstance(doc, dict):
                 continue
@@ -190,8 +198,39 @@ class VectorSearchService:
             if emb is not None:
                 doc_ids.append(str(doc.id))
                 arrays.append(emb)
-        if not arrays:
-            return {}
+            else:
+                missing.append(doc)
+
+        scores: Dict[str, float] = {}
+
+        if arrays:
+            try:
+                mat = np.stack(arrays).astype('float32')
+                q = np.array(query_vec, dtype='float32').reshape(-1)
+                qn = float(np.linalg.norm(q))
+                if qn != 0.0:
+                    norms = np.linalg.norm(mat, axis=1)
+                    norms[norms == 0.0] = 1e-9
+                    sims = (mat @ q) / (norms * qn)
+                    scores.update({doc_ids[i]: float(sims[i]) for i in range(len(doc_ids))})
+            except Exception:
+                pass
+
+        # Documents with no stored embedding: score them the same way articles
+        # are scored, so a missing rebuild degrades latency slightly rather than
+        # making a document invisible to search.
+        for doc in missing:
+            text = f"{getattr(doc, 'title', '')}. {getattr(doc, 'content', '')[:300]}"
+            sim = self._calculate_semantic_similarity(query_vec, text)
+            if sim:
+                scores[str(doc.id)] = sim
+
+        if missing:
+            logger.info(
+                "Vectorized semantic pass: %d stored embeddings + %d live-encoded",
+                len(doc_ids), len(missing),
+            )
+        return scores
         try:
             mat = np.stack(arrays).astype('float32')
             q = np.array(query_vec, dtype='float32').reshape(-1)
@@ -457,6 +496,9 @@ class VectorSearchService:
                     priority = int(doc.get('priority', 5))
                     usage_count = int(doc.get('usage_count', 0))
                     source_type = doc.get('source_type')
+                    source_level = doc.get('source_level', 'official')
+                    source_attribution = doc.get('source_attribution', '')
+                    rank_boost = float(doc.get('rank_boost', 1.0) or 1.0)
                 else:
                     title = getattr(doc, 'title', '')
                     content = getattr(doc, 'content', '')
@@ -465,6 +507,12 @@ class VectorSearchService:
                     priority = int(getattr(doc, 'priority', 5))
                     usage_count = int(getattr(doc, 'usage_count', 0))
                     source_type = None
+                    # Authority metadata for knowledge documents only; articles
+                    # and opportunities are the platform's own content and are
+                    # treated as official.
+                    source_level = getattr(doc, 'source_level', 'official') or 'official'
+                    source_attribution = getattr(doc, 'source_attribution', '') or ''
+                    rank_boost = float(getattr(doc, 'rank_boost', 1.0) or 1.0)
 
                 # Semantic similarity score (precomputed vectorized pass for KB docs)
                 semantic_score = 0.0
@@ -506,6 +554,10 @@ class VectorSearchService:
                 usage_boost = min(usage_count / 100.0, 0.2)  # Cap at 0.2
 
                 final_score = hybrid_score * (1.0 + priority_boost * 0.1 + usage_boost)
+                # Authority nudge: an official source edges out an equally
+                # relevant student clarification, but a soft multiplier means a
+                # strong clarification still surfaces when nothing official fits.
+                final_score *= rank_boost
 
                 # Ensure minimum score for documents with keyword matches
                 if keyword_score > 5 and final_score < 0.1:
@@ -517,6 +569,8 @@ class VectorSearchService:
                     'content': content,
                     'category': category,
                     'source_type': source_type,
+                    'source_level': source_level,
+                    'source_attribution': source_attribution,
                     'relevance': final_score,
                     'semantic_score': semantic_score,
                     'keyword_score': keyword_score,
@@ -616,8 +670,40 @@ class VectorSearchService:
             else:
                 content_snippet = content[:min(200, remaining_chars - 50)]
             
-            # Make it clearer that this is knowledge base information
-            entry = f"═══════════════════════════════════════════════════════════════\nKNOWLEDGE BASE DOCUMENT {i}\n═══════════════════════════════════════════════════════════════\nCategory: {category.upper()}\nTitle: {title}\n\nContent:\n{content_snippet}\n═══════════════════════════════════════════════════════════════\n"
+            # Authority of the source, so the model can phrase accordingly.
+            # Official sources carry no qualifier -- that is the whole point of
+            # the hierarchy. Lower tiers get one line of context.
+            source_level = result.get("source_level") or "official"
+            source_line = ""
+            if source_level == "official":
+                source_line = "Source: OFFICIAL (University regulation/policy/notice)\n"
+            elif source_level == "official_communication":
+                who = result.get("source_attribution") or "authorised University office"
+                source_line = f"Source: OFFICIAL COMMUNICATION from {who}\n"
+            elif source_level == "trusted_clarification":
+                who = result.get("source_attribution") or "student leadership"
+                source_line = (
+                    f"Source: TRUSTED CLARIFICATION from {who} "
+                    "(not a University regulation -- present it as guidance "
+                    "communicated to students, not as binding policy)\n"
+                )
+            else:
+                who = result.get("source_attribution") or "general guidance"
+                source_line = (
+                    f"Source: GENERAL INFORMATION ({who}) "
+                    "(non-authoritative -- answer with appropriate caution)\n"
+                )
+
+            entry = (
+                "═══════════════════════════════════════════════════════════════\n"
+                f"KNOWLEDGE BASE DOCUMENT {i}\n"
+                "═══════════════════════════════════════════════════════════════\n"
+                f"Category: {category.upper()}\n"
+                f"Title: {title}\n"
+                f"{source_line}"
+                f"\nContent:\n{content_snippet}\n"
+                "═══════════════════════════════════════════════════════════════\n"
+            )
             
             formatted.append(entry)
             total_chars += len(entry)

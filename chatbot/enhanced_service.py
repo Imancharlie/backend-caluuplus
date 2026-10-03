@@ -46,6 +46,25 @@ GEMINI_THINKING_BUDGET_CRITICAL = int(os.getenv("GEMINI_THINKING_BUDGET_CRITICAL
 GEMINI_OUTPUT_HEADROOM = int(os.getenv("GEMINI_OUTPUT_HEADROOM", "512"))
 GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
 
+# Last-resort fallback when settings.ANTHROPIC_MODEL is missing entirely. Kept in
+# sync with academic_backend/settings.py. Do NOT use a claude-3-* name here: those
+# models are not provisioned on this Anthropic workspace and return
+# 404 not_found_error ("model: claude-3-haiku") on every request.
+DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
+
+def _key_fingerprint(secret: str) -> str:
+    """Masked identifier for an API key, safe to write to logs.
+
+    Only ever logs the prefix/suffix and length so we can tell *which* key a
+    running process picked up (settings vs. environment) without leaking it.
+    """
+    if not secret:
+        return "<empty>"
+    if len(secret) <= 12:
+        return f"{secret[:2]}**** (len={len(secret)})"
+    return f"{secret[:12]}...{secret[-4:]} (len={len(secret)})"
+
 
 @dataclass
 class EnhancedResponse:
@@ -73,17 +92,62 @@ class EnhancedClaudeService:
         self._last_request_time = None
         self._min_request_interval = float(getattr(settings, 'ANTHROPIC_MIN_REQUEST_INTERVAL', 12))
 
-        # Choose the AI provider. Gemini is preferred when a key is configured;
-        # otherwise we fall back to Anthropic Claude.
+        # Choose the AI provider. Anthropic is now the preferred default;
+        # Gemini is used as a fallback if Anthropic is unavailable.
+        anthropic_key = getattr(settings, 'ANTHROPIC_API_KEY', '') or os.getenv('ANTHROPIC_API_KEY', '')
         gemini_key = getattr(settings, 'GEMINI_API_KEY', '') or os.getenv('GEMINI_API_KEY', '')
 
+        # Remember where the key came from: a stale/cached settings module or an
+        # unexported env var is the usual cause of "model not found" mismatches.
+        self._anthropic_key_source = 'django settings' if getattr(settings, 'ANTHROPIC_API_KEY', '') else (
+            'environment' if os.getenv('ANTHROPIC_API_KEY', '') else 'none')
+        self._gemini_key_source = 'django settings' if getattr(settings, 'GEMINI_API_KEY', '') else (
+            'environment' if os.getenv('GEMINI_API_KEY', '') else 'none')
+
         self._provider = 'anthropic'
-        self._model = "claude-3-haiku-20240307"
+        self._model = DEFAULT_ANTHROPIC_MODEL
         self._client = None
         self._gemini_client = None
+        self._api_key = ''
+        # Kept so a revoked/typo'd Anthropic key can be demoted to Gemini at
+        # request time instead of failing every message (see
+        # _activate_gemini_fallback). ``_fallback_locked`` makes that demotion
+        # happen at most once per process, so a Gemini outage can't ping-pong.
+        self._gemini_key = gemini_key
+        self._fallback_locked = False
 
-        # Gemini path: if a Gemini key is configured (and the SDK is installed),
-        # use Gemini and skip Anthropic entirely — no Anthropic key required.
+        # Anthropic path: use Anthropic as the primary provider when key is available
+        if anthropic_key:
+            try:
+                self._api_key = anthropic_key
+                self._client = Anthropic(api_key=anthropic_key)
+                self._provider = 'anthropic'
+                self._model = getattr(settings, 'ANTHROPIC_MODEL', DEFAULT_ANTHROPIC_MODEL)
+                logger.info(
+                    f"EnhancedClaudeService initialized (provider={self._provider}, "
+                    f"model={self._model}) with {self._min_request_interval}s request interval"
+                )
+                # DEBUG: show exactly which key/model this process resolved so a
+                # 404 "model not found" can be traced to stale config vs. a key
+                # that has no access to the requested model.
+                logger.warning(
+                    "[AnthropicDebug] settings module=%s key_source=%s key=%s "
+                    "key_from_settings=%r key_from_env_set=%s model=%s "
+                    "ANTHROPIC_MODEL_env=%r min_interval=%s",
+                    getattr(settings, 'SETTINGS_MODULE', '<unset>'),
+                    self._anthropic_key_source,
+                    _key_fingerprint(anthropic_key),
+                    getattr(settings, 'ANTHROPIC_API_KEY', None) is not None,
+                    bool(os.getenv('ANTHROPIC_API_KEY')),
+                    self._model,
+                    os.getenv('ANTHROPIC_MODEL'),
+                    self._min_request_interval,
+                )
+                return
+            except Exception as e:
+                logger.error(f"Failed to initialize Anthropic client: {e}. Falling back to Gemini.")
+
+        # Gemini path: fallback if Anthropic is unavailable or its init failed
         if gemini_key and GeminiClient is not None:
             try:
                 self._gemini_client = GeminiClient(
@@ -95,6 +159,15 @@ class EnhancedClaudeService:
                 logger.info(
                     f"EnhancedClaudeService initialized (provider={self._provider}, "
                     f"model={self._model}) with {self._min_request_interval}s request interval"
+                )
+                logger.warning(
+                    "[ProviderDebug] Falling back to Gemini: settings module=%s "
+                    "key_source=%s key=%s anthropic_configured=%s model=%s",
+                    getattr(settings, 'SETTINGS_MODULE', '<unset>'),
+                    self._gemini_key_source,
+                    _key_fingerprint(gemini_key),
+                    bool(anthropic_key),
+                    self._model,
                 )
                 return
             except Exception as e:
@@ -117,11 +190,17 @@ class EnhancedClaudeService:
                 "No AI provider configured. Set GEMINI_API_KEY (preferred) or "
                 "ANTHROPIC_API_KEY in Django settings or as an environment variable."
             )
+        self._api_key = api_key
         self._client = Anthropic(api_key=api_key)
 
         logger.info(
             f"EnhancedClaudeService initialized (provider={self._provider}, "
             f"model={self._model}) with {self._min_request_interval}s request interval"
+        )
+        logger.warning(
+            "[AnthropicDebug] late-bound client settings module=%s key=%s model=%s",
+            getattr(settings, 'SETTINGS_MODULE', '<unset>'),
+            _key_fingerprint(api_key), self._model,
         )
 
     def _gemini_config(self, system_prompt: str, max_tokens: int, headroom: Optional[int] = None,
@@ -175,6 +254,40 @@ class EnhancedClaudeService:
             if "MAX_TOKENS" in fr:
                 return True
         # No text and no explicit reason -> treat as retryable empty response.
+        return True
+
+    def _activate_gemini_fallback(self, status) -> bool:
+        """Demote this worker to Gemini after an Anthropic auth failure.
+
+        Anthropic is the preferred provider, but a revoked/expired/mistyped key
+        would otherwise fail *every* message with a 401 and take the chatbot
+        offline. When a Gemini key is configured we switch over so replies keep
+        working, and log loudly so the Anthropic key still gets replaced.
+
+        Returns True when the caller should retry the request on Gemini.
+        """
+        if self._fallback_locked:
+            return False
+        key = self._gemini_key or os.getenv('GEMINI_API_KEY', '')
+        if not key or GeminiClient is None:
+            return False
+        try:
+            self._gemini_client = GeminiClient(
+                api_key=key,
+                http_options=gemini_types.HttpOptions(timeout=45000),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("Could not initialise Gemini fallback client: %s", e)
+            return False
+        self._fallback_locked = True
+        self._provider = 'gemini'
+        self._model = getattr(settings, 'GEMINI_MODEL', 'gemini-flash-latest')
+        logger.error(
+            "[AnthropicDebug] Anthropic returned HTTP %s (invalid key). Demoting this "
+            "worker to Gemini (%s) so the chatbot stays online -- replace "
+            "ANTHROPIC_API_KEY to get Claude back.",
+            status, self._model,
+        )
         return True
 
     def _call_llm(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int,
@@ -264,13 +377,32 @@ class EnhancedClaudeService:
         # Default: Anthropic Claude
         # Note: temperature was dropped by the anthropic SDK (>=1.0); omit it so
         # the fallback doesn't crash with a TypeError when Gemini is unavailable.
-        return self._client.messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
-            timeout=timeout_seconds,
+        logger.warning(
+            "[AnthropicDebug] POST /v1/messages provider=%s model=%s "
+            "key=%s base_url=%s max_tokens=%s timeout=%s",
+            self._provider, self._model, _key_fingerprint(self._api_key or ''),
+            getattr(self._client, 'base_url', '<unknown>'), max_tokens, timeout_seconds,
         )
+        try:
+            return self._client.messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_content}],
+                timeout=timeout_seconds,
+            )
+        except Exception as e:  # noqa: BLE001 - surface the real cause in logs
+            status = getattr(e, 'status_code', None) or getattr(e, 'status', None)
+            logger.error(
+                "[AnthropicDebug] /v1/messages FAILED model=%s key=%s status=%s "
+                "error_type=%s error=%s",
+                self._model, _key_fingerprint(self._api_key or ''), status,
+                type(e).__name__, str(e)[:500],
+            )
+            if status in (401, 403) and self._activate_gemini_fallback(status):
+                return self._call_llm(system_prompt, user_content, max_tokens,
+                                      timeout_seconds, thinking_budget, use_web_search)
+            raise
 
     def _call_llm_streaming(self, system_prompt: str, user_content: str, max_tokens: int, timeout_seconds: int,
                             thinking_budget: Optional[int] = None, use_web_search: bool = False):
@@ -320,16 +452,43 @@ class EnhancedClaudeService:
                     raise
 
         # Anthropic streaming
-        with self._client.messages.stream(
-            model=self._model,
-            max_tokens=max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_content}],
-            timeout=timeout_seconds,
-        ) as stream:
-            for text in stream.text_stream:
-                if text:
-                    yield text
+        logger.warning(
+            "[AnthropicDebug] POST /v1/messages (stream) provider=%s model=%s "
+            "key=%s base_url=%s max_tokens=%s timeout=%s",
+            self._provider, self._model, _key_fingerprint(self._api_key or ''),
+            getattr(self._client, 'base_url', '<unknown>'), max_tokens, timeout_seconds,
+        )
+        # Tracked separately from the Gemini branch's local flag so the auth
+        # fallback below can tell "nothing sent yet" from "partial reply sent".
+        emitted = False
+        try:
+            with self._client.messages.stream(
+                model=self._model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_content}],
+                timeout=timeout_seconds,
+            ) as stream:
+                for text in stream.text_stream:
+                    if text:
+                        emitted = True
+                        yield text
+        except Exception as e:  # noqa: BLE001 - surface the real cause in logs
+            status = getattr(e, 'status_code', None) or getattr(e, 'status', None)
+            logger.error(
+                "[AnthropicDebug] /v1/messages (stream) FAILED model=%s key=%s "
+                "status=%s error_type=%s error=%s",
+                self._model, _key_fingerprint(self._api_key or ''), status,
+                type(e).__name__, str(e)[:500],
+            )
+            # Only safe to retry on Gemini if we have not emitted any text yet,
+            # otherwise the caller would see the reply twice.
+            if (status in (401, 403) and not emitted
+                    and self._activate_gemini_fallback(status)):
+                yield from self._call_llm_streaming(system_prompt, user_content, max_tokens,
+                                                   timeout_seconds, thinking_budget, use_web_search)
+                return
+            raise
 
     def build_student_context(self, user) -> str:
         """Build comprehensive student context from existing models (Redis-cached)."""
@@ -403,6 +562,349 @@ class EnhancedClaudeService:
         safe_cache_set(cache_key, result, timeout=300)  # 5 min TTL
         return result
 
+    def search_articles(self, query: str, university_id: str = None, top_k: int = 3) -> str:
+        """Search for relevant articles based on query."""
+        try:
+            from api.models import Article
+            import hashlib
+
+            query_hash = hashlib.md5(query.lower().encode()).hexdigest()
+            cache_key = f"articles_search:{university_id or 'all'}:{query_hash}"
+            cached = safe_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+            # Build query
+            articles_query = Article.objects.filter(
+                is_published=True,
+                status='published'
+            )
+
+            if university_id:
+                # Filter by university if provided (articles may not have university field)
+                # For now, we'll search all published articles
+                pass
+
+            # Simple keyword matching (can be enhanced with semantic search later)
+            query_lower = query.lower()
+            articles = articles_query.all()
+
+            # Score articles based on keyword matches
+            scored_articles = []
+            for article in articles:
+                score = 0
+                text_to_search = f"{article.title} {article.excerpt or ''} {article.content or ''} {' '.join(article.tags or [])}".lower()
+                for word in query_lower.split():
+                    if word in text_to_search:
+                        score += 1
+                if score > 0:
+                    scored_articles.append((score, article))
+
+            # Sort by score and take top_k
+            scored_articles.sort(key=lambda x: x[0], reverse=True)
+            top_articles = [a[1] for a in scored_articles[:top_k]]
+
+            if not top_articles:
+                safe_cache_set(cache_key, "", timeout=300)
+                return ""
+
+            # Format results
+            lines = []
+            for article in top_articles:
+                excerpt = article.excerpt or article.content[:200] if article.content else ""
+                lines.append(f"- {article.title}")
+                if excerpt:
+                    lines.append(f"  {excerpt[:150]}...")
+                if article.category:
+                    lines.append(f"  Category: {article.category}")
+
+            result = "\n".join(lines)
+            safe_cache_set(cache_key, result, timeout=300)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error searching articles: {e}")
+            return ""
+
+    def search_opportunities(self, query: str, university_id: str = None, top_k: int = 3) -> str:
+        """Search for relevant opportunities based on query."""
+        try:
+            from resources_opps.models import Opportunity
+            import hashlib
+
+            query_hash = hashlib.md5(query.lower().encode()).hexdigest()
+            cache_key = f"opportunities_search:{university_id or 'all'}:{query_hash}"
+            cached = safe_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+            # Build query - only approved and active opportunities
+            opps_query = Opportunity.objects.filter(
+                is_active=True,
+                status='approved'
+            )
+
+            if university_id:
+                opps_query = opps_query.filter(university_id=university_id)
+
+            # Simple keyword matching
+            query_lower = query.lower()
+            opportunities = opps_query.all()
+
+            # Score opportunities based on keyword matches
+            scored_opps = []
+            for opp in opportunities:
+                score = 0
+                text_to_search = f"{opp.title} {opp.content} {opp.category}".lower()
+                for word in query_lower.split():
+                    if word in text_to_search:
+                        score += 1
+                if score > 0:
+                    scored_opps.append((score, opp))
+
+            # Sort by score and take top_k
+            scored_opps.sort(key=lambda x: x[0], reverse=True)
+            top_opps = [o[1] for o in scored_opps[:top_k]]
+
+            if not top_opps:
+                safe_cache_set(cache_key, "", timeout=300)
+                return ""
+
+            # Format results
+            lines = []
+            for opp in top_opps:
+                lines.append(f"- {opp.title} ({opp.category})")
+                if opp.start_date or opp.end_date:
+                    date_range = f"{opp.start_date or 'Ongoing'} to {opp.end_date or 'Ongoing'}"
+                    lines.append(f"  Dates: {date_range}")
+                if opp.application_url:
+                    lines.append(f"  Apply: {opp.application_url}")
+                content_snippet = opp.content[:150] if opp.content else ""
+                if content_snippet:
+                    lines.append(f"  {content_snippet}...")
+
+            result = "\n".join(lines)
+            safe_cache_set(cache_key, result, timeout=300)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error searching opportunities: {e}")
+            return ""
+
+    def search_calendar_events(self, query: str, university_id: str = None, top_k: int = 3) -> str:
+        """Search academic calendar events and format them as dated context.
+
+        Two behaviours matter beyond keyword matching:
+
+        * An "upcoming" query (what is coming up / what is next) returns the
+          next dated events regardless of keywords, because the question is about
+          the calendar's future, not about a specific event's name.
+        * Follow-ups like "when does reporting start" resolve against the event
+          list. Previously only whole-query words were matched, so a follow-up
+          naming a different part of the event title ("reporting" when the event
+          is "Fresh Entrants Reporting") could score zero and the model then
+          claimed it had no date at all.
+        """
+        try:
+            from academia.models import AcademicEvent
+            import hashlib
+
+            query_hash = hashlib.md5(query.lower().encode()).hexdigest()
+            cache_key = f"calendar_search:{university_id or 'all'}:{query_hash}"
+            cached = safe_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+            events_query = AcademicEvent.objects.filter(is_active=True)
+            if university_id:
+                events_query = events_query.filter(
+                    calendar__university_id=university_id,
+                    calendar__is_active=True
+                )
+            events = list(events_query.select_related("calendar"))
+
+            if not events:
+                safe_cache_set(cache_key, "", timeout=300)
+                return ""
+
+            today = timezone.localdate()
+            query_lower = query.lower()
+
+            # Stopwords are dropped before matching so a follow-up like
+            # "when does it start" does not fail purely on filler words.
+            stop = {
+                'the', 'a', 'an', 'is', 'are', 'was', 'were', 'when', 'what',
+                'does', 'do', 'did', 'how', 'where', 'which', 'who', 'why',
+                'i', 'me', 'my', 'we', 'us', 'our', 'you', 'your', 'it', 'its',
+                'of', 'for', 'to', 'in', 'on', 'at', 'and', 'or', 'that',
+                'this', 'be', 'been', 'will', 'would', 'can', 'could', 'start',
+                'starts', 'started', 'begin', 'begins', 'began', 'tell', 'give',
+                'date', 'dates', 'day', 'time', 'from', 'with', 'about', 'please',
+            }
+            tokens = [
+                w for w in re.findall(r"[a-z0-9']+", query_lower)
+                if w not in stop and len(w) > 2
+            ]
+
+            wants_upcoming = bool(re.search(
+                r"(coming\s*up|comes?\s+next|what'?s?\s+next|what\s+is\s+next|next\s+up"
+                r"|still\s+to\s+come|any\w*\s+coming|timeline|upcoming"
+                r"|this\s+week|this\s+month|what'?s?\s+left)",
+                query_lower,
+            ))
+            # Asking for a time of day is unanswerable: AcademicEvent stores only
+            # dates. Detected so the prompt can say so instead of hallucinating.
+            wants_time = bool(re.search(
+                r"\b(what\s+time|start\s+time|what\s+hour|by\s+what\s+time"
+                r"|time\s+does|what\s+time\s+does)\b",
+                query_lower,
+            ))
+
+            def token_score(event):
+                haystack = f"{event.title} {event.description or ''} {event.event_type}".lower()
+                return sum(2 if t in event.title.lower() else 1
+                           for t in tokens if t in haystack)
+
+            scored = []
+            for event in events:
+                score = token_score(event)
+                if score > 0:
+                    scored.append((score, event))
+
+            if wants_upcoming or not scored:
+                # Upcoming = soonest dated event at/after today. Falls back to the
+                # most recent past events only when nothing remains this year.
+                future = sorted(
+                    (e for e in events
+                     if (e.end_date or e.start_date) >= today),
+                    key=lambda e: (e.start_date, e.order),
+                )
+                if future:
+                    scored.extend((1000 - i, e) for i, e in enumerate(future))
+
+            if not scored:
+                safe_cache_set(cache_key, "", timeout=300)
+                return ""
+
+            # Best keyword matches first, then upcoming dates.
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            seen = set()
+            ordered = []
+            for _score, event in scored:
+                if event.id not in seen:
+                    seen.add(event.id)
+                    ordered.append(event)
+            top_events = ordered[:top_k]
+
+            lines = [f"TODAY IS {today.isoformat()} ({today.strftime('%A')}).", ""]
+            if wants_time:
+                lines.append(
+                    "NOTE: the academic calendar records DATES only (start_date / "
+                    "end_date); it has no time-of-day fields. Do not invent a "
+                    "clock time -- say the calendar does not store one."
+                )
+                lines.append("")
+
+            for event in top_events:
+                start = event.start_date
+                end = event.end_date or event.start_date
+                if event.end_date and event.end_date != event.start_date:
+                    date_str = f"{start} to {end}"
+                else:
+                    date_str = f"{start}"
+                status = " (PAST)" if end < today else ""
+                days = (start - today).days
+                if 0 <= days <= 60:
+                    when = "today" if days == 0 else f"in {days} day(s)"
+                elif days < 0:
+                    when = f"{abs(days)} day(s) ago"
+                else:
+                    when = f"in {days} days"
+                lines.append(f"- {event.title} [{event.event_type}]{status}")
+                lines.append(f"    Starts: {start}   Ends: {end}   ({when})")
+                if event.description:
+                    lines.append(f"    {event.description[:220]}")
+
+            if top_events:
+                # Spell the start/end fields out separately. A "2026-10-17 to
+                # 2026-11-23" range reads as one opaque span, and a follow-up
+                # asking specifically when something STARTS then produced a
+                # clarification question instead of a date.
+                lines.append("")
+                lines.append(
+                    "Answer date questions directly from the Starts/Ends values "
+                    "above. Do not ask for clarification when an event is listed, "
+                    "and do not claim a date is unknown when it is shown here."
+                )
+
+            result = "\n".join(lines)
+            safe_cache_set(cache_key, result, timeout=300)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error searching calendar events: {e}")
+            return ""
+
+    def get_upcoming_events_alert(self, user) -> str:
+        """Get natural alert for upcoming events (1-2 days away)."""
+        try:
+            from academia.models import AcademicEvent, AcademicCalendar
+            from django.utils import timezone
+            from datetime import timedelta
+
+            cache_key = f"upcoming_events:{user.id}"
+            cached = safe_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
+            student = getattr(user, "student_profile", None)
+            if not student:
+                safe_cache_set(cache_key, "", timeout=60)
+                return ""
+
+            university_id = student.university_id
+            now = timezone.now()
+            tomorrow = now + timedelta(days=1)
+            day_after = now + timedelta(days=2)
+
+            # Get events in the next 1-2 days
+            upcoming_events = AcademicEvent.objects.filter(
+                is_active=True,
+                calendar__university_id=university_id,
+                calendar__is_active=True,
+                start_date__gte=now.date(),
+                start_date__lte=day_after.date()
+            ).order_by('start_date')[:3]
+
+            if not upcoming_events:
+                safe_cache_set(cache_key, "", timeout=60)
+                return ""
+
+            # Format natural alert
+            alerts = []
+            for event in upcoming_events:
+                days_until = (event.start_date - now.date()).days
+                if days_until == 0:
+                    time_str = "today"
+                elif days_until == 1:
+                    time_str = "tomorrow"
+                else:
+                    time_str = f"in {days_until} days"
+
+                alerts.append(f"{event.title} is {time_str}")
+
+            if alerts:
+                result = f"btw, heads up — {' and '.join(alerts)}."
+                safe_cache_set(cache_key, result, timeout=60)
+                return result
+
+            safe_cache_set(cache_key, "", timeout=60)
+            return ""
+
+        except Exception as e:
+            logger.error(f"Error getting upcoming events alert: {e}")
+            return ""
+
     def _format_recent_messages(self, messages) -> str:
         """Format last few messages for context - optimized to reduce tokens"""
         if not messages:
@@ -445,37 +947,84 @@ class EnhancedClaudeService:
             'procedure': [
                 'how to', 'how do i', 'steps to', 'process to', 'procedure for',
                 'postpone', 'defer', 'withdraw', 'register', 'enroll', 'drop',
-                'apply for', 'submit', 'request', 'appeal'
+                'apply for', 'submit', 'request', 'appeal', 'get started',
+                'begin', 'start', 'initiate', 'complete', 'finish', 'carry out',
+                'execute', 'perform', 'undertake', 'accomplish', 'achieve',
+                'way to', 'method for', 'approach to', 'technique for', 'strategy for'
             ],
             'regulation': [
                 'regulation', 'rule', 'policy', 'requirement', 'guideline',
                 'allowed', 'permitted', 'prohibited', 'forbidden', 'must', 'should',
-                'academic integrity', 'plagiarism', 'cheating'
+                'academic integrity', 'plagiarism', 'cheating', 'restriction',
+                'limitation', 'condition', 'criteria', 'standard', 'protocol',
+                'mandate', 'obligation', 'compliance', 'adhere to', 'follow',
+                'violation', 'breach', 'penalty', 'sanction', 'disciplinary'
             ],
             'calendar': [
                 'when is', 'date', 'deadline', 'holiday', 'break', 'exam period',
                 'registration period', 'semester starts', 'semester ends',
-                'academic calendar', 'event'
+                'academic calendar', 'event', 'schedule', 'timeline', 'due date',
+                'submission date', 'closing date', 'opening date', 'start date',
+                'end date', 'timeframe', 'period', 'duration', 'term dates',
+                'session dates', 'academic year', 'trimester', 'quarter'
             ],
             'navigation': [
                 'where is', 'how to find', 'navigate to', 'go to', 'access',
-                'find', 'locate', 'show me', 'where can i'
+                'find', 'locate', 'show me', 'where can i', 'get to', 'reach',
+                'directions to', 'path to', 'route to', 'way to', 'address of',
+                'location of', 'position of', 'place of', 'site of', 'area of'
             ],
             'faq': [
                 'what is', 'what are', 'can i', 'do i need', 'should i',
-                'is it possible', 'is there', 'does', 'explain'
+                'is it possible', 'is there', 'does', 'explain', 'tell me about',
+                'describe', 'clarify', 'elaborate', 'detail', 'specify', 'define',
+                'meaning of', 'understand', 'comprehend', 'interpret', 'information about',
+                'details on', 'overview of', 'summary of', 'introduction to'
             ],
             'academic_advice': [
                 'advice', 'help with', 'struggling', 'difficulty', 'recommendation',
-                'suggestion', 'tips', 'how to study', 'how to improve'
+                'suggestion', 'tips', 'how to study', 'how to improve', 'guidance',
+                'support', 'assistance', 'mentorship', 'counseling', 'coaching',
+                'strategies', 'methods', 'techniques', 'approaches', 'best practices',
+                'overcome', 'manage', 'handle', 'deal with', 'cope with', 'address'
             ],
             'program_info': [
                 'program', 'degree', 'major', 'curriculum', 'requirements',
-                'prerequisites', 'courses in', 'what courses'
+                'prerequisites', 'courses in', 'what courses', 'specialization',
+                'concentration', 'focus area', 'field of study', 'discipline',
+                'subject area', 'academic track', 'educational path', 'qualification',
+                'certification', 'diploma', 'coursework', 'syllabus', 'modules'
             ],
             'schedule': [
                 'schedule', 'timetable', 'class', 'when is class', 'today',
-                'tomorrow', 'next class'
+                'tomorrow', 'next class', 'upcoming', 'agenda', 'calendar',
+                'routine', 'daily plan', 'weekly plan', 'session', 'lecture',
+                'tutorial', 'seminar', 'lab', 'practical', 'workshop', 'meeting'
+            ],
+            'articles': [
+                'article', 'blog', 'post', 'read', 'news', 'story', 'publication',
+                'write-up', 'content', 'featured', 'latest article', 'recent post',
+                'blog post', 'news article', 'published', 'author', 'read about'
+            ],
+            'opportunities': [
+                'opportunity', 'job', 'internship', 'scholarship', 'competition',
+                'seminar', 'apply', 'opening', 'position', 'vacancy', 'career',
+                'employment', 'work', 'hiring', 'recruitment', 'fellowship',
+                'grant', 'award', 'training', 'workshop opportunity', 'call for'
+            ],
+            'calendar_events': [
+                'event', 'calendar', 'deadline', 'holiday', 'break', 'exam',
+                'registration', 'when is', 'upcoming', 'academic calendar',
+                'important date', 'key date', 'schedule date', 'event date',
+                'academic event', 'university event', 'campus event',
+                # Vague "what's next" phrasings. Without these, "what is coming
+                # up" matched nothing and fell through to plain 'faq' with
+                # needs_kb=False, so the calendar was never even queried.
+                'coming up', 'what is next', "what's next", 'what comes next',
+                'whats next', 'next event', 'next date', 'what is today',
+                "what's today", 'anything coming', 'soon', 'next up',
+                'this week', 'this month', 'still to come', 'remaining',
+                'timeline', 'what happens', 'what is planned'
             ]
         }
         
@@ -495,7 +1044,15 @@ class EnhancedClaudeService:
         primary_intent = max(confidence_scores.items(), key=lambda x: x[1])[0] if confidence_scores else 'faq'
         
         # Determine if it's a critical question (needs knowledge base)
-        critical_keywords = ['regulation', 'rule', 'policy', 'procedure', 'how to', 'requirement']
+        critical_keywords = [
+            'regulation', 'rule', 'policy', 'procedure', 'how to', 'requirement',
+            'guideline', 'standard', 'protocol', 'mandate', 'compliance', 'criteria',
+            'restriction', 'limitation', 'condition', 'obligation', 'must', 'should',
+            'allowed', 'permitted', 'prohibited', 'forbidden', 'violation', 'breach',
+            'penalty', 'sanction', 'disciplinary', 'academic integrity', 'plagiarism',
+            'cheating', 'deadline', 'due date', 'submission', 'application', 'form',
+            'document', 'certificate', 'transcript', 'official', 'administration'
+        ]
         is_critical = any(kw in query_lower for kw in critical_keywords)
 
         # --- General-knowledge / current-affairs detection -------------------
@@ -508,13 +1065,37 @@ class EnhancedClaudeService:
             'faculty', 'dean', 'credit', 'tuition', 'resit', 'defer', 'deferral',
             'student', 'lecturer', 'assignment', 'result', 'results', 'college',
             'department', 'vice chancellor', 'regulation', 'policy', 'syllabus',
+            'academic', 'university', 'enrollment', 'admission', 'application',
+            'scholarship', 'bursary', 'loan', 'financial aid', 'library', 'lab',
+            'practical', 'tutorial', 'lecture', 'seminar', 'workshop', 'counseling',
+            'advisor', 'mentor', 'supervisor', 'coordinator', 'administrator',
+            'office', 'registry', 'examination', 'assessment', 'evaluation',
+            'grading', 'marking', 'credit', 'unit', 'module', 'programme',
+            'degree', 'diploma', 'certificate', 'qualification', 'major', 'minor',
+            'specialization', 'concentration', 'thesis', 'dissertation', 'research',
+            'project', 'internship', 'placement', 'career', 'employment',
+            'article', 'opportunity', 'event', 'calendar', 'deadline', 'holiday',
+            # Platform/company questions. "who is" alone was treated as a
+            # general-knowledge signal, so "who is the founder of caluu+"
+            # skipped the knowledge base entirely and the bot answered "I don't
+            # have that info" while the answer sat in a KnowledgeDocument.
+            'caluu', 'caluu+', 'caluplus', 'caluuplus', 'kodin', 'koding',
+            'platform', 'founder', 'founded', 'founding', 'ceo', 'cto',
+            'who built', 'who made', 'who owns', 'company behind',
         ]
         general_signals = [
             'today', 'latest', 'current', 'news', 'price', 'prices', 'exchange rate',
-            'usd', 'tzs', 'shilling', 'dollar', 'weather', 'who is', 'president',
+            'usd', 'tzs', 'shilling', 'dollar', 'weather', 'president',
             'match', 'score', 'convert', 'how much', 'tanzania', 'dar es salaam',
             'technology', 'science', 'history', 'meaning of', 'define', 'recipe',
             'football', 'economy', 'election', 'phone', 'best way to', 'tip',
+            'stock market', 'crypto', 'bitcoin', 'investment', 'business',
+            'startup', 'entrepreneur', 'marketing', 'sales', 'management',
+            'programming', 'coding', 'software', 'app', 'website', 'development',
+            'artificial intelligence', 'ai', 'machine learning', 'data science',
+            'health', 'fitness', 'nutrition', 'exercise', 'mental health',
+            'travel', 'tourism', 'destination', 'hotel', 'flight', 'visa',
+            'entertainment', 'movie', 'music', 'game', 'sport', 'hobby'
         ]
         has_university_signal = any(kw in query_lower for kw in university_signals)
         has_general_signal = any(kw in query_lower for kw in general_signals)
@@ -526,16 +1107,115 @@ class EnhancedClaudeService:
         web_search_enabled = bool(getattr(settings, 'GEMINI_ENABLE_WEB_SEARCH', False))
         use_web_search = bool(web_search_enabled and is_general and not is_critical)
 
+        # "What is coming up / what's next" is a request for UPCOMING DATES, not
+        # a general-knowledge question. Left as plain 'faq' it got is_general=True
+        # and needs_kb=False, so the academic calendar was never consulted and the
+        # model answered from its own (empty) knowledge of the user's timetable.
+        # 'calendar' and 'calendar_events' are BOTH intent keys. More importantly, a
+        # date question often wins on some other intent first: "when does
+        # reporting start" scores highest as 'procedure', so keying only off
+        # primary_intent left the calendar unread for exactly the follow-up
+        # questions it should answer. Detect the date shape directly instead.
+        asks_about_dates = bool(re.search(
+            r"(\bwhen\b|\bwhat\s+(date|day|month|year)\b|\bwhich\s+(date|day)\b"
+            r"|\bstart\s+date\b|\bend\s+date\b|\bdeadline\b|\bdates?\b"
+            r"|\bhow\s+long\b|\buntil\b|\bsince\b)",
+            query_lower,
+        ))
+        is_calendar = (
+            primary_intent in ('calendar', 'calendar_events')
+            or asks_about_dates
+        )
+        wants_upcoming = bool(re.search(
+            r"(coming\s*up|comes?\s+next|what'?s?\s+next|what\s+is\s+next|next\s+up"
+            r"|still\s+to\s+come|any\w*\s+coming|what'?s?\s+(happening|planned)"
+            r"|what'?s?\s+left|timeline)",
+            query_lower,
+        ))
+        if wants_upcoming:
+            is_calendar = True
+            is_general = False
+
+        # The calendar is a first-class source for anything date-shaped, so it is
+        # always worth reading even when the knowledge base is not needed.
+        needs_kb = ((not is_general) or is_critical) or is_calendar
+
         return {
             'primary_intent': primary_intent,
             'all_intents': detected_intents,
             'confidence': confidence_scores,
             'is_critical': is_critical,
             'is_general': is_general,
+            'is_calendar': is_calendar,
+            'wants_upcoming': wants_upcoming,
             'use_web_search': use_web_search,
-            'needs_knowledge_base': (not is_general) or is_critical,
+            'needs_knowledge_base': needs_kb,
         }
     
+    # Greetings name nothing, so they must not become a conversation title.
+    _TITLE_GREETINGS = {
+        "hi", "hello", "hey", "yo", "hiya", "sup", "heya", "hii", "howdy",
+        "good morning", "good afternoon", "good evening", "morning", "afternoon",
+        "evening", "greetings", "greetings!", "hello there", "hi there",
+        "hey there", "hello!", "hi!", "yo!", "hey!", "good day", "thanks",
+        "thank you", "thank you!", "ok", "okay", "cool", "nice", "lol",
+        "haha", "hmm", "hm", "yes", "no", "sure", "yep", "nope", "wow",
+    }
+
+    def summarize_conversation_title(self, first_user_message: str,
+                                     first_reply: str = "") -> str:
+        """Derive a short, human title for a conversation from its first exchange.
+
+        ChatGPT-style: the title names the topic, not the greeting. Falls back
+        to a local heuristic (no LLM call) because titling should be instant and
+        free; the first ~6 meaningful words usually make a good title on their
+        own. Returns "" when there is nothing yet worth naming.
+        """
+        text = (first_user_message or "").strip()
+        if not text:
+            return ""
+
+        cleaned = re.sub(r"\s+", " ", text).strip()
+        lowered = cleaned.lower().strip(" .!?,;:")
+
+        # Pure greeting -> no title. The conversation gets one from the first
+        # substantive message instead.
+        if lowered in self._TITLE_GREETINGS:
+            return ""
+        # Greeting followed by the real question in the same message.
+        for greet in ("hello ", "hi ", "hey ", "yo ", "good morning ",
+                      "good afternoon ", "good evening "):
+            if lowered.startswith(greet):
+                cleaned = re.sub(r"^(hello|hi|hey|yo)\s+", "", cleaned,
+                                 flags=re.IGNORECASE)
+                lowered = cleaned.lower().strip(" .!?,;:")
+                break
+
+        # Strip a leading "so/um/please/can you/could you/may i/would you" so
+        # the title starts on the subject.
+        cleaned = re.sub(
+            r"^(so|um|uh|please|pls|kindly|hey|okay|ok)\s+[,]?\s*", "", cleaned,
+            flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"^(can|could|would|may|might|should)\s+(you|i|we)\s+(please\s+)?",
+            "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip(" .!?,;:")
+        if not cleaned:
+            return ""
+
+        words = cleaned.split()
+        # Keep it short, and never cut mid-word.
+        title = " ".join(words[:6])
+        if len(words) > 6:
+            title += "..."
+        # Sentence case reads better than all-caps in a sidebar list. Always
+        # lift the first letter; guarding on islower() would leave titles
+        # lowercase whenever the sentence happened to contain a capital
+        # mid-way ("how do I register for courses").
+        if title[:1].islower():
+            title = title[:1].upper() + title[1:]
+        return title[:90]
+
     def _extract_personal_info_from_message(self, message: str) -> str:
         """Extract personal information from user message"""
         personal_keywords = [
@@ -563,6 +1243,16 @@ class EnhancedClaudeService:
     def build_enhanced_prompt(self, user, conversation, user_message: str, rag_context: str = "", 
                              personal_info: str = "", navigation_context: str = "") -> Tuple[str, str]:
         """Build comprehensive prompt using the persona module (tone + epistemic layers)."""
+
+        # Today's date, always. Without it the model cannot reason about "what is
+        # coming up", "is this past", or answer "what is today's date" -- it has
+        # no clock of its own and the training cutoff is months behind.
+        now = timezone.localtime() if timezone.is_aware(timezone.now()) else timezone.now()
+        today_line = (
+            f"CURRENT DATE: {now:%A, %d %B %Y} ({now.date().isoformat()}). "
+            f"Use this to resolve relative dates ('coming up', 'next week', "
+            f"'this month') and to say whether a deadline has passed."
+        )
 
         # Get or create ChatHistory
         chat_history, _ = ChatHistory.objects.get_or_create(user=user)
@@ -606,12 +1296,44 @@ class EnhancedClaudeService:
             user_message=user_message,
         )
 
+        # Date awareness on every single request, regardless of intent.
+        system_prompt = f"{system_prompt}\n\n{today_line}"
+
+        # Source-authority guidance, present only when knowledge was retrieved.
+        # Kept short and behavioural on purpose: the goal is natural framing, not
+        # a disclaimer on every answer.
+        source_authority_rules = (
+            "HOW TO PRESENT SOURCES (apply quietly, do not announce it):\n"
+            "- Each document above is labelled with its authority level.\n"
+            "- OFFICIAL sources (regulation, policy, official fee schedule, "
+            "official notice): state them plainly as the University's position. "
+            "No qualifier needed.\n"
+            "- OFFICIAL COMMUNICATION from a University office: attribute it "
+            "naturally ('according to the notice from ...').\n"
+            "- TRUSTED CLARIFICATION from student leadership: it is useful and "
+            "credible, so ANSWER THE QUESTION DIRECTLY FIRST, then frame it in "
+            "one short clause -- 'based on the clarification communicated to "
+            "students...' / 'the available clarification indicates...'. Do NOT "
+            "call it unreliable, do NOT say you cannot confirm it, do NOT say "
+            "'this is only student information'.\n"
+            "- GENERAL INFORMATION: answer, with light hedging.\n"
+            "- Only add 'for the University's final position, check the current "
+            "official source' when the question is genuinely consequential, "
+            "disputed, or about money, deadlines, eligibility or penalties -- "
+            "NOT on every answer.\n"
+            "- If an official source and a clarification disagree, lead with "
+            "the official one, mention the difference briefly, and never merge "
+            "them into a single claim."
+        ) if rag_context else ""
+
         # Add grounding / KB instructions
         if rag_context:
             system_prompt += f"""
 STUDENT'S QUESTION: "{user_message}"
 
 YOUR TASK: Answer the question above using the knowledge base information provided. Extract and present the relevant information from the knowledge base directly. Do not give generic responses.
+
+{source_authority_rules}
 
 IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no labels. Just the natural reply text."""
         else:
@@ -1160,9 +1882,12 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             input_tokens = 0
             output_tokens = 0
 
-        # Cost calculation in TSH
-        input_usd = input_tokens * float(getattr(settings, "ANTHROPIC_INPUT_USD_PER_TOKEN", 0.00000025))
-        output_usd = output_tokens * float(getattr(settings, "ANTHROPIC_OUTPUT_USD_PER_TOKEN", 0.00000125))
+        # Cost calculation in TSH. Default prices are Claude Haiku 4.5's
+        # published $1/MTok input, $5/MTok output. Keep these in sync with
+        # academic_backend/production.py, which is what actually supplies them
+        # in production -- these literals are only a fallback.
+        input_usd = input_tokens * float(getattr(settings, "ANTHROPIC_INPUT_USD_PER_TOKEN", 0.000001))
+        output_usd = output_tokens * float(getattr(settings, "ANTHROPIC_OUTPUT_USD_PER_TOKEN", 0.000005))
         total_usd = input_usd + output_usd
         rate = float(getattr(settings, "USD_TO_TSH_RATE", 2700))
         cost_tsh = round(total_usd * rate, 2)
@@ -1299,8 +2024,8 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         input_tokens = 0
         output_tokens = max(len(full_text.split()) * 1.3, 1)  # rough estimate
         total_tokens = int(input_tokens + output_tokens)
-        input_usd = input_tokens * float(getattr(settings, "ANTHROPIC_INPUT_USD_PER_TOKEN", 0.00000025))
-        output_usd = output_tokens * float(getattr(settings, "ANTHROPIC_OUTPUT_USD_PER_TOKEN", 0.00000125))
+        input_usd = input_tokens * float(getattr(settings, "ANTHROPIC_INPUT_USD_PER_TOKEN", 0.000001))
+        output_usd = output_tokens * float(getattr(settings, "ANTHROPIC_OUTPUT_USD_PER_TOKEN", 0.000005))
         rate = float(getattr(settings, "USD_TO_TSH_RATE", 2700))
         cost_tsh = round((input_usd + output_usd) * rate, 2)
 

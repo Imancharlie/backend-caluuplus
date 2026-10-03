@@ -68,9 +68,9 @@ class ChatHistoryAdmin(admin.ModelAdmin):
 
 @admin.register(KnowledgeDocument)
 class KnowledgeDocumentAdmin(admin.ModelAdmin):
-    list_display = ['id', 'title', 'category', 'university', 'priority', 'usage_count', 'is_active', 'created_at']
-    list_filter = ['category', 'university', 'is_active', 'priority', 'created_at']
-    search_fields = ['title', 'content', 'category', 'tags']
+    list_display = ['id', 'title', 'source_level', 'category', 'university', 'priority', 'usage_count', 'is_active', 'created_at']
+    list_filter = ['source_level', 'category', 'university', 'is_active', 'priority', 'created_at']
+    search_fields = ['title', 'content', 'category', 'tags', 'source_attribution']
     readonly_fields = ['id', 'created_at', 'updated_at', 'usage_count']
     ordering = ['-priority', '-usage_count', '-created_at']
     actions = ['export_selected', 'deactivate_selected', 'activate_selected']
@@ -78,6 +78,15 @@ class KnowledgeDocumentAdmin(admin.ModelAdmin):
     fieldsets = (
         ('Document Information', {
             'fields': ('title', 'content', 'category', 'tags')
+        }),
+        ('Source Authority', {
+            'fields': ('source_level', 'source_attribution'),
+            'description': (
+                'How firmly Mr Caluu may present this. Official sources are '
+                'stated plainly; student-leader clarifications are useful and '
+                'credible but are framed as guidance communicated to students, '
+                'not as University regulation.'
+            ),
         }),
         ('Scope & Priority', {
             'fields': ('university', 'priority', 'is_active')
@@ -329,26 +338,68 @@ class StudentMemoryAdmin(admin.ModelAdmin):
 
 @admin.register(KnowledgeSuggestion)
 class KnowledgeSuggestionAdmin(admin.ModelAdmin):
-    list_display = ['trigger', 'query_text', 'confidence_score', 'status', 'created_at']
-    list_filter = ['status', 'trigger']
-    search_fields = ['query_text']
+    list_display = ['trigger', 'query_text', 'source_level', 'confidence_score', 'status', 'created_at']
+    list_filter = ['status', 'trigger', 'source_level']
+    search_fields = ['query_text', 'response_text']
     readonly_fields = ['id', 'query_hash', 'created_at']
+    fieldsets = (
+        ('The Gap', {
+            'fields': ('trigger', 'query_text', 'response_text', 'confidence_score')
+        }),
+        ('Source Authority', {
+            'fields': ('source_level',),
+            'description': (
+                'Set this BEFORE approving. It carries through to the knowledge '
+                'document, so a student-leader clarification is not promoted to '
+                'an official University position.'
+            ),
+        }),
+        ('Review', {
+            'fields': ('status', 'reviewed_by', 'reviewed_at')
+        }),
+        ('Context', {
+            'fields': ('conversation', 'user', 'id', 'query_hash', 'created_at'),
+            'classes': ('collapse',)
+        }),
+    )
     actions = ['approve_selected']
 
     def approve_selected(self, request, queryset):
+        """Approve selected suggestions and promote each to a KnowledgeDocument.
+
+        The document inherits the suggestion's ``source_level`` so a
+        student-leader clarification stays labelled as one once it is in the
+        knowledge base -- approving it must not silently promote it to official.
+        """
         from django.utils import timezone
         from .models import KnowledgeDocument
+        from .vector_service import VectorSearchService
+
+        created = 0
         for s in queryset.filter(status='pending'):
             s.status = 'approved'
             s.reviewed_by = request.user
             s.reviewed_at = timezone.now()
             s.save()
-            KnowledgeDocument.objects.create(
+            doc = KnowledgeDocument.objects.create(
                 title=s.query_text[:100],
                 content=s.response_text,
                 category='faq',
+                source_level=s.source_level or 'general',
             )
-        self.message_user(request, f"Approved {queryset.count()} suggestions and created knowledge documents.")
+            created += 1
+            # Embed immediately so the new document is searchable at once.
+            try:
+                service = VectorSearchService()
+                if service.model is not None:
+                    service._store_embedding(doc, f"{doc.title}. {doc.content}")
+            except Exception:
+                pass
+
+        self.message_user(
+            request,
+            f"Approved {queryset.count()} suggestions and created {created} knowledge documents.",
+        )
     approve_selected.short_description = "Approve selected and create knowledge documents"
 
 

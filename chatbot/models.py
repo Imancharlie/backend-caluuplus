@@ -6,6 +6,9 @@ import uuid
 class Conversation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="chat_conversations")
+    # Left blank until the first exchange, then derived from it (see
+    # EnhancedClaudeService.summarize_conversation_title). A greeting alone does
+    # not produce a title, because "hi" names nothing.
     title = models.CharField(max_length=200, blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -114,6 +117,25 @@ class KnowledgeDocument(models.Model):
     )
     university = models.ForeignKey('api.University', on_delete=models.CASCADE, null=True, blank=True)
     tags = models.CharField(max_length=500, blank=True, help_text="Comma-separated tags for better searchability")
+    # Authority of the source. Deliberately a single small field rather than a
+    # new model: existing rows default to 'official', so behaviour is unchanged
+    # for every document already in the knowledge base.
+    SOURCE_LEVELS = [
+        ('official', 'Official / Primary (regulation, policy, official fee schedule)'),
+        ('official_communication', 'Official Communication (authorised University office)'),
+        ('trusted_clarification', 'Trusted Supporting Clarification (student-leader / student-government)'),
+        ('general', 'General Information (guidance, community info)'),
+    ]
+    source_level = models.CharField(
+        max_length=30, choices=SOURCE_LEVELS, default='official', db_index=True,
+        help_text="Authority of the source. Controls how firmly Mr Caluu presents it.",
+    )
+    source_attribution = models.CharField(
+        max_length=200, blank=True,
+        help_text="Who published it, e.g. 'Faculty of Engineering' or 'Student Government'. "
+                  "Used to phrase the answer naturally, e.g. 'based on the clarification "
+                  "communicated to students'.",
+    )
     priority = models.IntegerField(default=5, help_text="Priority score 1-10 (higher = more important)")
     usage_count = models.IntegerField(default=0, help_text="Number of times this document has been retrieved")
     is_active = models.BooleanField(default=True, help_text="Whether this document is active and searchable")
@@ -129,10 +151,40 @@ class KnowledgeDocument(models.Model):
         indexes = [
             models.Index(fields=['category', 'university', 'is_active']),
             models.Index(fields=['priority', 'usage_count']),
+            models.Index(fields=['source_level', 'is_active']),
         ]
     
     def __str__(self):
         return self.title
+
+    # Ranking nudge per authority level. An official document should outrank an
+    # equally-relevant student clarification, so official sources get a small
+    # positive multiplier rather than a hard filter -- a strong student-leader
+    # clarification can still surface when nothing official matches.
+    SOURCE_RANK_BOOST = {
+        'official': 1.15,
+        'official_communication': 1.08,
+        'trusted_clarification': 1.0,
+        'general': 0.95,
+    }
+
+    @property
+    def rank_boost(self) -> float:
+        return self.SOURCE_RANK_BOOST.get(self.source_level, 1.0)
+
+    def phrasing(self) -> str:
+        """Natural attribution phrase for the prompt, or '' when official.
+
+        Official sources need no qualifier -- that is the point of the hierarchy.
+        """
+        who = (self.source_attribution or "").strip()
+        if self.source_level == 'official':
+            return ""
+        if self.source_level == 'official_communication':
+            return who or "official University communication"
+        if self.source_level == 'trusted_clarification':
+            return who or "the clarification communicated to students"
+        return who or "general guidance"
     
     def increment_usage(self):
         """Increment usage count when document is retrieved"""
@@ -323,6 +375,22 @@ class KnowledgeSuggestion(models.Model):
             models.Index(fields=['status', 'trigger']),
             models.Index(fields=['query_hash']),
         ]
+
+    # Authority of the approved answer, mirroring KnowledgeDocument.source_level
+    # so a reviewer can mark a student-leader clarification as such at the moment
+    # they promote it into the knowledge base.
+    SOURCE_LEVELS = [
+        ('official', 'Official / Primary'),
+        ('official_communication', 'Official Communication'),
+        ('trusted_clarification', 'Trusted Supporting Clarification (student leader)'),
+        ('general', 'General Information'),
+    ]
+
+    source_level = models.CharField(
+        max_length=30, choices=SOURCE_LEVELS, default='general',
+        help_text="Authority assigned when this suggestion is approved and becomes "
+                  "a KnowledgeDocument.",
+    )
 
     def __str__(self):
         return f"[{self.trigger}] {self.query_text[:60]}"
