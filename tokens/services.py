@@ -44,6 +44,14 @@ RULE_REFERRAL_COMPLETED = "REFERRAL_COMPLETED"
 RULE_GPA_CALCULATION = "GPA_CALCULATION"
 RULE_MR_CALUU_MESSAGE = "MR_CALUU_MESSAGE"
 RULE_MAP_ACTIVITY = "MAP_ACTIVITY"
+RULE_MAP_NAVIGATION = "MAP_NAVIGATION"
+RULE_SIGNUP_BONUS = "SIGNUP_BONUS"
+RULE_OPPORTUNITY_SHARE = "OPPORTUNITY_SHARE"
+RULE_STORY_SHARE = "STORY_SHARE"
+RULE_MAP_LOCATION_ADDED = "MAP_LOCATION_ADDED"
+
+# Features the app may charge for directly. The price still comes from the rule.
+CLIENT_CONSUMABLE_RULES = {RULE_GPA_CALCULATION, RULE_MAP_NAVIGATION}
 
 REFERRAL_REQUIRED_STATE_KEY = "REFERRAL_REQUIRED_STATE"
 REDEEM_CONFIG_KEY = "REDEMPTION"
@@ -78,18 +86,41 @@ class RuleNotFound(TokenError):
 # Rule / config helpers
 # ---------------------------------------------------------------------------
 
-def _reward_value(key):
-    rule = RewardRule.objects.filter(key=key, is_active=True).first()
+def _reward_rule(key):
+    """Return the reward amount, or None when the rule is off or pays nothing.
+
+    A missing rule is an error. An inactive rule, or an amount of 0, means the
+    action still happens and no tokens are given. Admins edit this in the
+    tokens admin.
+    """
+    rule = RewardRule.objects.filter(key=key).first()
     if rule is None:
-        raise RuleNotFound(f"Reward rule '{key}' not found or inactive")
+        raise RuleNotFound(f"Reward rule '{key}' not found")
+    if not rule.is_active or int(rule.amount) <= 0:
+        return None
     return int(rule.amount)
 
 
-def _consume_value(key):
-    rule = ConsumptionRule.objects.filter(key=key, is_active=True).first()
-    if rule is None:
-        raise RuleNotFound(f"Consumption rule '{key}' not found or inactive")
+def _consume_amount(key):
+    """Return the cost, or None when the feature does not require tokens."""
+    rule = ConsumptionRule.objects.filter(key=key).first()
+    if rule is None or not rule.is_active or int(rule.amount) <= 0:
+        return None
     return int(rule.amount)
+
+
+def _uncharged(wallet):
+    return {
+        "charged": False,
+        "transaction_id": None,
+        "transaction_type": None,
+        "kind": None,
+        "amount": 0,
+        "status": None,
+        "earned_balance": int(wallet.earned_balance),
+        "purchased_balance": int(wallet.purchased_balance),
+        "total_balance": int(wallet.total_balance),
+    }
 
 
 def get_config(key, default=None):
@@ -190,10 +221,14 @@ def reward(user, rule_key, reference_key=None, description="", amount=None,
 
     value = amount
     if value is None:
-        value = _reward_value(rule_key)
+        value = _reward_rule(rule_key)
+        if value is None:
+            return None
     value = int(value)
     if value < 0:
         raise TokenError("Reward amount cannot be negative", code="invalid_amount", status_code=400)
+    if value == 0:
+        return None
 
     if not reference_key:
         reference_key = f"reward:{rule_key}:{uuid.uuid4()}"
@@ -282,10 +317,14 @@ def consume(user, rule_key, reference_key=None, description="", amount=None,
 
     value = amount
     if value is None:
-        value = _consume_value(rule_key)
+        value = _consume_amount(rule_key)
+        if value is None:
+            wallet, _ = get_or_create_wallet(user)
+            return _uncharged(wallet)
     value = int(value)
     if value <= 0:
-        raise TokenError("Consumption amount must be positive", code="invalid_amount", status_code=400)
+        wallet, _ = get_or_create_wallet(user)
+        return _uncharged(wallet)
 
     if not reference_key:
         reference_key = f"consume:{rule_key}:{uuid.uuid4()}"
@@ -341,16 +380,41 @@ def consume(user, rule_key, reference_key=None, description="", amount=None,
 
 
 def has_balance_for(user, rule_key=None, amount=None):
-    """Check (without spending) whether the user can afford a consumption."""
+    """Check (without spending) whether the user can afford a consumption.
+
+    Returns (True, 0) when the rule is missing, switched off, or costs nothing,
+    so the feature stays available.
+    """
     value = amount
     if value is None:
-        try:
-            value = _consume_value(rule_key)
-        except RuleNotFound:
-            return False, None
+        value = _consume_amount(rule_key) if rule_key else None
+        if value is None:
+            return True, 0
+    value = int(value)
+    if value <= 0:
+        return True, 0
     wallet, _ = get_or_create_wallet(user)
     total = wallet.total_balance
     return total >= value, value
+
+
+def grant_signup_bonus(user):
+    """Give the welcome tokens once. Safe to call again; the reference blocks a second grant."""
+    if not user or not getattr(user, "pk", None):
+        return None
+    try:
+        return reward(
+            user,
+            RULE_SIGNUP_BONUS,
+            reference_key=f"signup_bonus:{user.pk}",
+            description="Welcome tokens",
+            initiated_by="signup",
+        )
+    except DuplicateOperation:
+        return None
+    except TokenError as exc:
+        logger.warning("Signup bonus skipped for %s: %s", getattr(user, "pk", None), exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +746,12 @@ def _maybe_reward_referral(referral):
     if referral.status in ("eligible", "rewarded"):
         return True
 
-    amount = _reward_value(RULE_REFERRAL_COMPLETED)
+    try:
+        amount = _reward_rule(RULE_REFERRAL_COMPLETED)
+    except RuleNotFound:
+        return False
+    if not amount:
+        return False
     ref = f"referral:{referral.id}"
     with transaction.atomic():
         wallet, _ = TokenWallet.objects.select_for_update().get_or_create(user=referral.referrer)

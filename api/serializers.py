@@ -60,6 +60,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         # New user registration
         validated_data['username'] = validated_data['email']
         user = User.objects.create_user(**validated_data)
+        from tokens.services import grant_signup_bonus
+        grant_signup_bonus(user)
         return user
 
 

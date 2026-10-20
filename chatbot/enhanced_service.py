@@ -2257,6 +2257,7 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             "tokens_used": total_tokens,
             "cost_tsh": cost_tsh,
             "reply": full_text,
+            "billable": response_complete,
         }
 
     def _clean_personality_notes(self, notes: str) -> str:

@@ -16,7 +16,6 @@ Endpoint layout (mounted under ``api/map/``):
 """
 
 import logging
-import uuid
 
 from django.db.models import Count, Prefetch, Q
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -189,7 +188,7 @@ class MapContentMixin:
     def perform_create(self, serializer):
         self._force_pending(serializer, set_author=True)
         super().perform_create(serializer)
-        self._consume_map_tokens()
+        self._reward_added_location(serializer.instance)
 
     def perform_update(self, serializer):
         # Editing marks the row pending again (unless an approver edited the
@@ -231,23 +230,26 @@ class MapContentMixin:
                 "Hard deletes require a superuser. Use PATCH is_active=false to deactivate."
             )
 
-    def _consume_map_tokens(self):
-        """Route map-activity consumption through the central token service.
-
-        Best-effort so a low balance never blocks writing map content.
-        """
+    def _reward_added_location(self, instance):
+        """Pay once for a new place or venue. Other map writes are not rewarded."""
+        if instance is None or instance.__class__.__name__ not in ("Place", "Venue"):
+            return
+        user = getattr(self.request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return
         try:
             from tokens import services as token_service
-            token_service.consume(
-                self.request.user,
-                "MAP_ACTIVITY",
-                reference_key=f"map:{self.request.path}:{uuid.uuid4()}",
-                description="Caluu Map activity",
+            token_service.reward(
+                user,
+                "MAP_LOCATION_ADDED",
+                reference_key=f"map_location:{instance.pk}",
+                description=f"Reward for adding a map location: {getattr(instance, 'name', '')}",
+                content_object=instance,
                 initiated_by="caluu_map",
             )
         except Exception as e:  # noqa: BLE001
             import logging
-            logging.getLogger(__name__).warning(f"Map token consumption skipped: {str(e)}")
+            logging.getLogger(__name__).warning("Map location reward skipped: %s", e)
 
     def create(self, request, *args, **kwargs):
         campus = _clean_campus(request.data.dict() if hasattr(request.data, "dict") else request.data)

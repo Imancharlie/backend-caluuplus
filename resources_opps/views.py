@@ -111,6 +111,23 @@ class OpportunityViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['university', 'category', 'created_by']
 
+    def _reward_share(self, opportunity):
+        """Pay once for posting an opportunity. An inactive rule pays nothing."""
+        if not getattr(opportunity, "created_by_id", None):
+            return
+        try:
+            from tokens import services as token_service
+            token_service.reward(
+                opportunity.created_by,
+                "OPPORTUNITY_SHARE",
+                reference_key=f"opportunity_share:{opportunity.id}",
+                description=f"Reward for sharing opportunity: {opportunity.title}",
+                content_object=opportunity,
+                initiated_by="opportunities",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Opportunity share reward skipped for %s: %s", opportunity.id, exc)
+
     def perform_create(self, serializer):
         """Set the creator, status, and is_active when creating an opportunity."""
         # Validate university belongs to user
@@ -129,6 +146,7 @@ class OpportunityViewSet(viewsets.ModelViewSet):
             status='approved',
             is_active=True
         )
+        self._reward_share(opportunity)
         self._notify_admin_submission(opportunity)
 
     def get_queryset(self):

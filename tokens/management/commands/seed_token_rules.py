@@ -17,7 +17,11 @@ class Command(BaseCommand):
             ("PROFILE_COMPLETION", "Profile Completion", 50, True),
             ("OPPORTUNITY_APPROVED", "Opportunity Approved", 20, True),
             ("ARTICLE_APPROVED", "Article Approved", 30, True),
-            ("ARTICLE_SHARE_REWARD", "Article Share Reward", 2, True),
+            ("ARTICLE_SHARE_REWARD", "Article Share Reward", 70, True),
+            ("OPPORTUNITY_SHARE", "Opportunity Shared", 25, True),
+            ("STORY_SHARE", "Story Shared", 10, True),
+            ("MAP_LOCATION_ADDED", "Map Location Added", 25, True),
+            ("SIGNUP_BONUS", "New Account Welcome", 100, True),
             ("SURVEY_COMPLETION", "Survey Completion", 10, True),
             ("SURVEY_QUESTION", "Survey Question Answered", 2, True),
             ("REFERRAL_COMPLETED", "Successful Referral", 100, True),
@@ -31,8 +35,9 @@ class Command(BaseCommand):
 
         consume_rules = [
             ("GPA_CALCULATION", "GPA Calculation", 5, True),
-            ("MR_CALUU_MESSAGE", "Mr Caluu Message", 3, True),
-            ("MAP_ACTIVITY", "Map Activity", 2, True),
+            ("MR_CALUU_MESSAGE", "Mr Caluu Message", 10, True),
+            ("MAP_NAVIGATION", "Map Navigation", 2, True),
+            ("MAP_ACTIVITY", "Map Activity", 2, False),
         ]
         for key, label, amount, active in consume_rules:
             _, created = ConsumptionRule.objects.get_or_create(

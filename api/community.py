@@ -640,6 +640,19 @@ def story_list(request):
     except serializers.ValidationError as exc:
         return Response({"error": _readable_validation(exc)}, status=status.HTTP_400_BAD_REQUEST)
     story.save()
+    try:
+        from tokens import services as token_service
+        token_service.reward(
+            request.user,
+            "STORY_SHARE",
+            reference_key=f"story_share:{story.pk}",
+            description="Reward for sharing a story",
+            content_object=story,
+            initiated_by="community",
+        )
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("Story share reward skipped for %s: %s", story.pk, exc)
     story = _base_queryset(request.user).get(pk=story.pk)
     return Response(serialize_story(story, request, detail=True), status=status.HTTP_201_CREATED)
 

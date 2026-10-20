@@ -524,6 +524,8 @@ class FirebaseLoginView(APIView):
                     profile_picture=picture
                 )
                 created = True
+                from tokens.services import grant_signup_bonus
+                grant_signup_bonus(user)
 
             # Update user information (whether found or created)
             updated = False
@@ -2356,23 +2358,6 @@ def gpa_calculation_create(request):
             is_target=serializer.validated_data['is_target']
         )
 
-        # Consumption routed through the central token service
-        # (purchased tokens first, then earned). Best-effort so a low balance
-        # does not block saving the encrypted GPA record.
-        try:
-            from tokens import services as token_service
-            token_service.consume(
-                request.user,
-                "GPA_CALCULATION",
-                reference_key=f"gpa:{gpa_calculation.id}",
-                description="GPA calculation",
-                content_object=gpa_calculation,
-                initiated_by="api",
-            )
-        except Exception as e:  # noqa: BLE001
-            import logging
-            logging.getLogger(__name__).warning(f"GPA token consumption skipped: {str(e)}")
-        
         return Response({
             'message': 'Encrypted GPA calculation event saved successfully',
             'id': str(gpa_calculation.id),

@@ -25,6 +25,67 @@ from .anthropic_service import AnthropicService
 
 logger = logging.getLogger(__name__)
 
+
+_UNBILLABLE_REPLY_STARTS = (
+    "i'm having trouble",
+    "i'm experiencing a configuration",
+    "i'm currently at my usage limit",
+    "i'm hitting my usage limit",
+    "the ai service is temporarily unavailable",
+    "sorry, i couldn't generate",
+    "i'm having a little trouble",
+)
+
+
+def _opening_user_message(conversation, *, already_saved):
+    """The first thing a person sends in a conversation is free."""
+    count = conversation.messages.filter(role="user").count()
+    return count <= (1 if already_saved else 0)
+
+
+def _reply_is_billable(text):
+    """Charge only a real answer. Errors, empty text, and connection fallbacks are free."""
+    cleaned = (text or "").strip().lower()
+    if not cleaned:
+        return False
+    return not cleaned.startswith(_UNBILLABLE_REPLY_STARTS)
+
+
+def _charge_mr_caluu(user, assistant_msg, reply_text, opening_message):
+    if opening_message or assistant_msg is None or not _reply_is_billable(reply_text):
+        return
+    try:
+        from tokens import services as token_service
+        token_service.consume(
+            user,
+            "MR_CALUU_MESSAGE",
+            reference_key=f"mrcaluu:{assistant_msg.id}",
+            description="Mr Caluu message",
+            initiated_by="chatbot",
+        )
+    except Exception as exc:
+        logger.warning("Mr Caluu token consumption skipped for user %s: %s", user.id, exc)
+
+
+def _mr_caluu_token_block(user):
+    """Refuse the reply before the model runs when the wallet cannot pay.
+
+    An inactive or zero-cost rule lets the message through.
+    """
+    from tokens.services import has_balance_for
+
+    allowed, _cost = has_balance_for(user, rule_key="MR_CALUU_MESSAGE")
+    if allowed:
+        return None
+    return Response(
+        {
+            "detail": "You've run out of tokens. Get tokens to keep chatting with Mr Caluu.",
+            "code": "insufficient_balance",
+        },
+        status=status.HTTP_402_PAYMENT_REQUIRED,
+    )
+
+
 # Alias for clarity - use 're' throughout the file
 re = regex_module
 
@@ -189,18 +250,11 @@ class ChatbotViewSet(viewsets.ModelViewSet):
 
         logger.info(f"Processing message from user {request.user.id}, length: {len(sanitized_message)}")
 
-        # TOKEN SAFETY (pre-check): reject immediately if balance is zero, before any LLM call.
-        # A full LLM call later may push the balance slightly negative (by ~1 message cost),
-        # which is the grace per Phase 6. The next message will be rejected here.
-        try:
-            from tokens.services import has_balance_for
-            if not has_balance_for(request.user, rule_key="MR_CALUU_MESSAGE"):
-                return Response(
-                    {"detail": "You've run out of tokens! Top up to keep chatting with Mr Caluu. 🪙"},
-                    status=status.HTTP_402_PAYMENT_REQUIRED,
-                )
-        except Exception:
-            pass  # If the check fails (rule missing, wallet issue), let it proceed.
+        opening_message = _opening_user_message(conversation, already_saved=False)
+        if not opening_message:
+            blocked = _mr_caluu_token_block(request.user)
+            if blocked is not None:
+                return blocked
 
         # Save user message (short transaction, no LLM)
         with transaction.atomic():
@@ -390,20 +444,16 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.error(f"Memory candidate extraction failed for user {request.user.id}: {e}")
 
-        # TOKEN SAFETY (finalize): only charge for actual LLM calls.
-        # Quick responses and cached hits are FREE — they never deduct tokens.
+        # Charge only a completed answer. The first message, quick replies,
+        # and connection or error fallbacks stay free.
         if not quick:
-            try:
-                from tokens import services as token_service
-                token_service.consume(
-                    request.user,
-                    "MR_CALUU_MESSAGE",
-                    reference_key=f"mrcaluu:{assistant_msg.id}" if assistant_msg else None,
-                    description="Mr Caluu message",
-                    initiated_by="chatbot",
-                )
-            except Exception as e:
-                logger.warning(f"Mr Caluu token consumption skipped for user {request.user.id}: {str(e)}")
+            reply_text = ai_response.text if ai_response is not None else ""
+            _charge_mr_caluu(
+                request.user,
+                assistant_msg,
+                reply_text,
+                _opening_user_message(conversation, already_saved=True),
+            )
 
         # Capture learning suggestions (Phase 5) — shared detector, never fatal.
         if ai_response is not None:
@@ -471,16 +521,11 @@ class ChatbotViewSet(viewsets.ModelViewSet):
         if not sanitized_message:
             return Response({"detail": "Empty message"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # TOKEN SAFETY (pre-check): reject immediately before any LLM work.
-        try:
-            from tokens.services import has_balance_for
-            if not has_balance_for(request.user, rule_key="MR_CALUU_MESSAGE"):
-                return Response(
-                    {"detail": "You've run out of tokens! Top up to keep chatting with Mr Caluu. 🪙"},
-                    status=status.HTTP_402_PAYMENT_REQUIRED,
-                )
-        except Exception:
-            pass
+        opening_message = _opening_user_message(conversation, already_saved=False)
+        if not opening_message:
+            blocked = _mr_caluu_token_block(request.user)
+            if blocked is not None:
+                return blocked
 
         # Save user message (short transaction)
         with transaction.atomic():
@@ -496,6 +541,7 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             metadata = {}
             learning_capture_done = False
             response_complete = False
+            billable_reply = False
 
             def run_learning_capture(reason):
                 """Record the knowledge gap. Runs once, the moment the model finishes.
@@ -634,7 +680,8 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                             'cost_tsh': event['cost_tsh'],
                         }
                         full_text = event['reply']  # canonical cleaned text
-                        response_complete = True
+                        billable_reply = bool(event.get("billable"))
+                        response_complete = billable_reply
                         run_learning_capture("model_finished")
 
                 # Add upcoming events alert naturally
@@ -761,18 +808,13 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     logger.debug(f"Learning capture skipped in stream: {e}")
 
-                # TOKEN SAFETY (finalize): charge only real LLM turns
-                try:
-                    from tokens import services as token_service
-                    token_service.consume(
+                if billable_reply:
+                    _charge_mr_caluu(
                         request.user,
-                        "MR_CALUU_MESSAGE",
-                        reference_key=f"mrcaluu:{assistant_msg.id}",
-                        description="Mr Caluu message",
-                        initiated_by="chatbot",
+                        assistant_msg,
+                        full_text,
+                        _opening_user_message(conversation, already_saved=True),
                     )
-                except Exception as e:
-                    logger.warning(f"Token consumption skipped in stream: {e}")
 
                 yield f"data: {json.dumps({'type': 'done', 'reply': full_text, **metadata})}\n\n"
 

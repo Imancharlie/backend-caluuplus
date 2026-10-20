@@ -139,6 +139,11 @@ class ConsumeView(APIView):
         if not rule_key:
             return Response({"error": "rule_key is required", "code": "missing_rule"},
                             status=status.HTTP_400_BAD_REQUEST)
+        if rule_key not in token_service.CLIENT_CONSUMABLE_RULES:
+            return Response(
+                {"error": "That action cannot be charged from the app", "code": "rule_not_client_chargeable"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             result = token_service.consume(
                 request.user, rule_key, reference_key=reference_key or None, description=description

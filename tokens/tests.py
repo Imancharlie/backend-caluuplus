@@ -66,12 +66,24 @@ class RewardTest(TestCase):
         with self.assertRaises(token_service.RuleNotFound):
             token_service.reward(u, "NOT_A_REAL_RULE")
 
+    def test_inactive_reward_pays_nothing(self):
+        RewardRule.objects.update_or_create(
+            key="STORY_SHARE", defaults={"label": "Story", "amount": 10, "is_active": False}
+        )
+        u = make_user("story@test.com")
+        self.assertIsNone(token_service.reward(u, "STORY_SHARE", reference_key="story:1"))
+        self.assertEqual(token_service.get_wallet(u).earned_balance, 0)
+
 
 class ConsumptionOrderingTest(TestCase):
     @classmethod
     def setUpTestData(cls):
-        ConsumptionRule.objects.create(key="GPA_CALCULATION", label="GPA", amount=5)
-        RewardRule.objects.create(key="PROFILE_COMPLETION", label="PC", amount=50)
+        ConsumptionRule.objects.update_or_create(
+            key="GPA_CALCULATION", defaults={"label": "GPA", "amount": 5, "is_active": True}
+        )
+        RewardRule.objects.update_or_create(
+            key="PROFILE_COMPLETION", defaults={"label": "PC", "amount": 50, "is_active": True}
+        )
 
     def test_purchased_consumed_first(self):
         u = make_user()
@@ -106,6 +118,24 @@ class ConsumptionOrderingTest(TestCase):
         u = make_user()
         with self.assertRaises(token_service.InsufficientBalance):
             token_service.consume(u, "GPA_CALCULATION")
+
+    def test_inactive_consumption_is_free(self):
+        ConsumptionRule.objects.update_or_create(
+            key="MAP_NAVIGATION", defaults={"label": "Map", "amount": 2, "is_active": False}
+        )
+        u = make_user("free@test.com")
+        result = token_service.consume(u, "MAP_NAVIGATION")
+        self.assertFalse(result["charged"])
+        self.assertEqual(token_service.get_wallet(u).total_balance, 0)
+
+    def test_signup_bonus_once(self):
+        RewardRule.objects.update_or_create(
+            key="SIGNUP_BONUS", defaults={"label": "Welcome", "amount": 100, "is_active": True}
+        )
+        u = make_user("new@test.com")
+        token_service.grant_signup_bonus(u)
+        token_service.grant_signup_bonus(u)
+        self.assertEqual(token_service.get_wallet(u).earned_balance, 100)
 
     def test_consume_idempotent(self):
         u = make_user()
@@ -265,8 +295,12 @@ class TokenAPITest(TestCase):
         self.client = APIClient()
         self.user = make_user("api@test.com")
         self.client.force_authenticate(user=self.user)
-        RewardRule.objects.create(key="PROFILE_COMPLETION", label="PC", amount=50)
-        ConsumptionRule.objects.create(key="GPA_CALCULATION", label="GPA", amount=5)
+        RewardRule.objects.update_or_create(
+            key="PROFILE_COMPLETION", defaults={"label": "PC", "amount": 50, "is_active": True}
+        )
+        ConsumptionRule.objects.update_or_create(
+            key="GPA_CALCULATION", defaults={"label": "GPA", "amount": 5, "is_active": True}
+        )
         TokenPackage.objects.create(name="Starter", token_amount=100, price_amount=5000.00, currency="TSH")
 
     def test_wallet_endpoint(self):
@@ -277,6 +311,16 @@ class TokenAPITest(TestCase):
     def test_consume_endpoint_requires_rule(self):
         resp = self.client.post("/api/tokens/consume/", {}, format="json")
         self.assertEqual(resp.status_code, 400)
+
+    def test_consume_endpoint_rejects_server_only_rules(self):
+        resp = self.client.post("/api/tokens/consume/", {"rule_key": "MR_CALUU_MESSAGE"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "rule_not_client_chargeable")
+
+    def test_consume_endpoint_blocks_short_balance(self):
+        resp = self.client.post("/api/tokens/consume/", {"rule_key": "GPA_CALCULATION"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["code"], "insufficient_balance")
 
     def test_packages_list_returns_active_only(self):
         inactive = TokenPackage.objects.create(
