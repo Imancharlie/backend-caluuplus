@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 import uuid
 
 
@@ -368,6 +369,14 @@ class KnowledgeSuggestion(models.Model):
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_suggestions')
     reviewed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    occurrence_count = models.PositiveIntegerField(
+        default=1,
+        help_text="How many times this gap was hit. Repeated questions rank higher for staff.",
+    )
+    last_seen_at = models.DateTimeField(
+        default=timezone.now,
+        help_text="Last time this gap was triggered in chat.",
+    )
 
     class Meta:
         ordering = ['-created_at']
@@ -393,7 +402,8 @@ class KnowledgeSuggestion(models.Model):
     )
 
     def __str__(self):
-        return f"[{self.trigger}] {self.query_text[:60]}"
+        suffix = f" x{self.occurrence_count}" if self.occurrence_count > 1 else ""
+        return f"[{self.trigger}] {self.query_text[:60]}{suffix}"
 
     def save(self, *args, **kwargs):
         import hashlib

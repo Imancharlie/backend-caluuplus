@@ -1,3 +1,6 @@
+from decimal import Decimal, InvalidOperation
+
+from django.db import models
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.pagination import PageNumberPagination
@@ -8,6 +11,7 @@ from . import services as token_service
 from . import services
 from .models import (
     ConsumptionRule,
+    PurchaseRequest,
     RedemptionRequest,
     Referral,
     ReferralCode,
@@ -18,6 +22,7 @@ from .models import (
 )
 from .serializers import (
     AdminRedemptionRequestSerializer,
+    PurchaseRequestSerializer,
     RedemptionRequestSerializer,
     TokenPackageSerializer,
     TokenRuleSerializer,
@@ -197,39 +202,60 @@ class PurchaseView(APIView):
     POST /api/tokens/purchase/
     Body: {"package_id": "...", "provider": "manual", "payment_reference": "..."}
 
-    Verifies the payment via the payment abstraction, then credits purchased
-    tokens. Tokens are NEVER credited because the frontend says payment
-    succeeded - the backend verifies the payment first.
+    Records a pending purchase. Tokens are credited only after a staff member
+    approves the request. A repeated reference returns 409 and does not
+    create a second request.
     """
     permission_classes = [TokensPermission]
 
     def post(self, request):
         package_id = request.data.get("package_id")
-        payment_reference = request.data.get("payment_reference")
-        provider = request.data.get("provider", "manual")
+        payment_reference = (request.data.get("payment_reference") or "").strip()
+        provider = request.data.get("provider", "manual") or "manual"
+        claimed_amount = request.data.get("claimed_amount", request.data.get("amount_sent"))
         if not package_id or not payment_reference:
             return Response(
                 {"error": "package_id and payment_reference are required", "code": "missing_fields"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        try:
-            from .payments import verify_payment_and_credit
-            from .models import TokenPackage
-
-            package = TokenPackage.objects.filter(id=package_id, is_active=True).first()
-            if package is None:
-                return Response(
-                    {"error": "Package not found", "code": "package_not_found"},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-            result = verify_payment_and_credit(
-                user=request.user, package=package,
-                payment_reference=payment_reference, provider_name=provider,
-                currency=package.currency,
+        package = TokenPackage.objects.filter(id=package_id, is_active=True).first()
+        if package is None:
+            return Response(
+                {"error": "Package not found", "code": "package_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
             )
-        except services.TokenError as exc:
-            return _error(exc)
-        return Response(result, status=status.HTTP_201_CREATED)
+        if claimed_amount not in (None, ""):
+            try:
+                claimed_amount = Decimal(str(claimed_amount))
+            except (InvalidOperation, ValueError):
+                return Response(
+                    {"error": "claimed_amount must be a number", "code": "invalid_amount"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            claimed_amount = None
+        existing = PurchaseRequest.objects.filter(
+            user=request.user, package=package, payment_reference=payment_reference
+        ).first()
+        if existing is not None:
+            return Response(
+                {
+                    "error": "A purchase with this payment reference already exists",
+                    "code": "duplicate_operation",
+                    "status": existing.status,
+                    "id": str(existing.id),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        purchase_request = PurchaseRequest.objects.create(
+            user=request.user,
+            package=package,
+            payment_reference=payment_reference,
+            provider=provider,
+            claimed_amount=claimed_amount if claimed_amount not in (None, "") else None,
+        )
+        _notify_staff_of_purchase(purchase_request)
+        return Response(PurchaseRequestSerializer(purchase_request).data, status=status.HTTP_201_CREATED)
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +574,86 @@ class AdminPackageUpdateView(APIView):
                             status=status.HTTP_404_NOT_FOUND)
         package.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _notify_staff_of_purchase(purchase_request):
+    """Best-effort in-app notice. A notification failure must not roll back the request."""
+    try:
+        from api.models import Notification, User
+
+        staff = User.objects.filter(is_active=True).filter(
+            models.Q(is_staff=True) | models.Q(is_superuser=True)
+        ).distinct()
+        body = (
+            f"{purchase_request.user.email} submitted {purchase_request.package.name} "
+            f"({purchase_request.payment_reference})."
+        )
+        Notification.objects.bulk_create([
+            Notification(
+                user=member,
+                title="Token purchase awaiting review",
+                body=body,
+                notification_type="info",
+            )
+            for member in staff
+        ])
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("Failed to notify staff of purchase %s", purchase_request.id)
+
+
+class AdminPurchaseReviewView(APIView):
+    """
+    POST /api/tokens/admin/purchases/{id}/{approve|reject}/   (staff only)
+
+    Approval credits the package once. Rejection leaves the wallet unchanged.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk, action):
+        purchase_request = PurchaseRequest.objects.filter(pk=pk).select_related("user", "package").first()
+        if purchase_request is None:
+            return Response({"error": "Purchase not found", "code": "not_found"},
+                            status=status.HTTP_404_NOT_FOUND)
+        try:
+            if action == "approve":
+                result = token_service.approve_purchase_request(
+                    purchase_request, request.user, note=request.data.get("note", "")
+                )
+                _notify_purchase_decision(purchase_request, approved=True)
+                return Response(
+                    {**PurchaseRequestSerializer(purchase_request).data, "wallet": result},
+                    status=status.HTTP_200_OK,
+                )
+            if action == "reject":
+                token_service.reject_purchase_request(
+                    purchase_request, request.user, reason=request.data.get("note", "")
+                )
+                _notify_purchase_decision(purchase_request, approved=False)
+            else:
+                return Response({"error": "Invalid action", "code": "invalid_action"},
+                                status=status.HTTP_400_BAD_REQUEST)
+        except services.TokenError as exc:
+            return _error(exc)
+        return Response(PurchaseRequestSerializer(purchase_request).data, status=status.HTTP_200_OK)
+
+
+def _notify_purchase_decision(purchase_request, approved):
+    try:
+        from api.models import Notification
+
+        Notification.objects.create(
+            user=purchase_request.user,
+            title="Token purchase approved" if approved else "Token purchase rejected",
+            body=(
+                f"{purchase_request.package.name} is now in your wallet."
+                if approved else
+                f"{purchase_request.package.name} was not approved. {purchase_request.review_reason}".strip()
+            ),
+            notification_type="success" if approved else "warning",
+        )
+    except Exception:
+        pass
 
 
 class AdminRedemptionListView(APIView):

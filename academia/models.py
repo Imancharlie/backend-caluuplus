@@ -107,3 +107,55 @@ class AcademicEvent(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.start_date})"
+
+
+class GlobalSemesterCalendar(models.Model):
+    """One semester calendar for every university.
+
+    Staff set the dates once. While today falls inside a range, that semester
+    is current for all students. Profiles are never changed automatically.
+    """
+
+    semester_1_start = models.DateField(null=True, blank=True)
+    semester_1_end = models.DateField(null=True, blank=True)
+    semester_2_start = models.DateField(null=True, blank=True)
+    semester_2_end = models.DateField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Semester dates (all universities)"
+        verbose_name_plural = "Semester dates (all universities)"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return "Semester dates for all universities"
+
+    @staticmethod
+    def _contains(start, end, day):
+        return bool(start and end and start <= day <= end)
+
+    def window_on(self, day):
+        """Return (semester number, start date) for the window covering day, or (None, None)."""
+        in_first = self._contains(self.semester_1_start, self.semester_1_end, day)
+        in_second = self._contains(self.semester_2_start, self.semester_2_end, day)
+        if in_first and in_second:
+            if self.semester_2_start >= self.semester_1_start:
+                return 2, self.semester_2_start
+            return 1, self.semester_1_start
+        if in_first:
+            return 1, self.semester_1_start
+        if in_second:
+            return 2, self.semester_2_start
+        return None, None
+
+    @classmethod
+    def current(cls, day=None):
+        from django.utils import timezone
+
+        row = cls.objects.filter(pk=1).first()
+        if row is None:
+            return None, None
+        return row.window_on(day or timezone.localdate())

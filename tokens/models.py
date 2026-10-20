@@ -417,3 +417,53 @@ class RedemptionRequest(models.Model):
 
     def __str__(self):
         return f"{self.user} - {self.earned_amount} earned ({self.status})"
+
+
+class PurchaseRequest(models.Model):
+    """
+    A student-submitted token purchase awaiting staff confirmation.
+
+    Submitting a payment reference does not credit tokens. Staff approval is
+    the verification step for the manual provider; approval calls
+    tokens.services.purchase exactly once.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="token_purchase_requests"
+    )
+    package = models.ForeignKey(TokenPackage, on_delete=models.PROTECT, related_name="purchase_requests")
+    payment_reference = models.CharField(max_length=255)
+    provider = models.CharField(max_length=50, default="manual")
+    claimed_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    review_reason = models.TextField(blank=True, default="")
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_purchase_requests",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "package", "payment_reference"],
+                name="uniq_purchase_request_user_package_ref",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["status", "-created_at"]),
+            models.Index(fields=["user", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user} - {self.package} ({self.status})"

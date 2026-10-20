@@ -2,6 +2,7 @@ from rest_framework import serializers
 
 from .models import (
     ConsumptionRule,
+    PurchaseRequest,
     RedemptionRequest,
     Referral,
     RewardRule,
@@ -58,6 +59,30 @@ class TokenTransactionSerializer(serializers.ModelSerializer):
             "initiated_by",
             "created_at",
         ]
+
+
+class PurchaseRequestSerializer(serializers.ModelSerializer):
+    package_id = serializers.UUIDField(source="package.id", read_only=True)
+    package_name = serializers.CharField(source="package.name", read_only=True)
+    token_amount = serializers.DecimalField(
+        source="package.token_amount", max_digits=20, decimal_places=0, read_only=True
+    )
+
+    class Meta:
+        model = PurchaseRequest
+        fields = [
+            "id",
+            "package_id",
+            "package_name",
+            "token_amount",
+            "payment_reference",
+            "provider",
+            "claimed_amount",
+            "status",
+            "review_reason",
+            "created_at",
+        ]
+        read_only_fields = fields
 
 
 class TokenPackageSerializer(serializers.ModelSerializer):

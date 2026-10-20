@@ -202,7 +202,7 @@ AUTH_USER_MODEL = 'api.User'
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_ENABLE_WEB_SEARCH = os.getenv("GEMINI_ENABLE_WEB_SEARCH", "false").lower() in ("1", "true", "yes")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 # claude-3-* names return 404 on this Anthropic workspace; claude-haiku-4-5 is
 # the successor to claude-3-haiku. Verify with:
 #   curl https://api.anthropic.com/v1/models -H "x-api-key: $ANTHROPIC_API_KEY"
@@ -382,12 +382,16 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',  # Changed to DEBUG to see all logs
+        # INFO, not DEBUG: the SDKs (anthropic/httpx) log the ENTIRE request body
+        # at DEBUG, which for the chatbot means the full system prompt plus the
+        # student's name, email, programme and courses written to disk on every
+        # message -- a large I/O cost and a privacy leak.
+        'level': 'INFO',
     },
     'loggers': {
         'api': {
             'handlers': ['console'],
-            'level': 'DEBUG',  # Show all API logs including DEBUG, INFO, WARNING, ERROR
+            'level': 'INFO',  # Show API logs, but not DEBUG
             'propagate': False,
         },
         'chatbot': {
@@ -395,6 +399,11 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+        # These log full HTTP payloads (system prompt + student PII) at DEBUG.
+        'anthropic': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'httpx': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'httpcore': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'google': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
         'django': {
             'handlers': ['console'],
             'level': 'INFO',

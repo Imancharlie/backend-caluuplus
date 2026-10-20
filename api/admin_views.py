@@ -474,11 +474,19 @@ def university_list(request):
 
 @admin_required
 @require_http_methods(["GET", "POST"])
+def _posted_grade_scheme(request):
+    scheme = (request.POST.get('grade_scheme') or University.GRADE_SCHEME_GRADES).strip()
+    if scheme not in dict(University.GRADE_SCHEMES):
+        return University.GRADE_SCHEME_GRADES
+    return scheme
+
+
 def university_create(request):
     """Create a new university"""
     if request.method == 'POST':
         name = request.POST.get('name', '').strip()
         country = request.POST.get('country', '').strip()
+        grade_scheme = _posted_grade_scheme(request)
         
         if not name:
             messages.error(request, 'University name is required.')
@@ -487,6 +495,7 @@ def university_create(request):
                 'form_title': 'Add University',
                 'name': name,
                 'country': country,
+                'grade_scheme': grade_scheme,
             })
         
         # Check for duplicate
@@ -497,11 +506,13 @@ def university_create(request):
                 'form_title': 'Add University',
                 'name': name,
                 'country': country,
+                'grade_scheme': grade_scheme,
             })
         
         university = University.objects.create(
             name=name,
-            country=country or 'Tanzania'
+            country=country or 'Tanzania',
+            grade_scheme=grade_scheme,
         )
         
         messages.success(request, f'University "{name}" created successfully.')
@@ -510,6 +521,7 @@ def university_create(request):
     context = {
         'active_page': 'universities',
         'form_title': 'Add University',
+        'grade_scheme': University.GRADE_SCHEME_GRADES,
     }
     return render(request, 'dashboard/universities/form.html', context)
 
@@ -523,6 +535,7 @@ def university_edit(request, university_id):
     if request.method == 'POST':
         name = request.POST.get('name', '').strip()
         country = request.POST.get('country', '').strip()
+        grade_scheme = _posted_grade_scheme(request)
         
         if not name:
             messages.error(request, 'University name is required.')
@@ -532,6 +545,7 @@ def university_edit(request, university_id):
                 'university': university,
                 'name': name,
                 'country': country,
+                'grade_scheme': grade_scheme,
             })
         
         # Check for duplicate (excluding current)
@@ -543,10 +557,12 @@ def university_edit(request, university_id):
                 'university': university,
                 'name': name,
                 'country': country,
+                'grade_scheme': grade_scheme,
             })
         
         university.name = name
         university.country = country or 'Tanzania'
+        university.grade_scheme = grade_scheme
         university.save()
         
         messages.success(request, f'University "{name}" updated successfully.')
@@ -558,6 +574,7 @@ def university_edit(request, university_id):
         'university': university,
         'name': university.name,
         'country': university.country,
+        'grade_scheme': university.grade_scheme or University.GRADE_SCHEME_GRADES,
     }
     return render(request, 'dashboard/universities/form.html', context)
 

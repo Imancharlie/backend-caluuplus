@@ -8,3 +8,5 @@ class ChatbotConfig(AppConfig):
     def ready(self):
         # Import signals so RAG cache auto-invalidates on content change (Phase 4)
         import chatbot.signals  # noqa: F401
+        # Register deployment checks for AI provider credentials
+        import chatbot.checks  # noqa: F401

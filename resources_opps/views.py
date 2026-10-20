@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions, status, parsers
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -8,10 +9,16 @@ from django.conf import settings
 from django.core.mail import send_mail
 import logging
 
-from .models import Resource, Opportunity
+from .models import Opportunity, OpportunityReport, Resource
 from .serializers import ResourceSerializer, OpportunitySerializer
 
 logger = logging.getLogger(__name__)
+
+
+class OpportunityPagination(PageNumberPagination):
+    page_size = 12
+    page_size_query_param = 'page_size'
+    max_page_size = 40
 
 
 class ResourceViewSet(viewsets.ModelViewSet):
@@ -98,6 +105,7 @@ class OpportunityViewSet(viewsets.ModelViewSet):
     """
     queryset = Opportunity.objects.all().order_by('-created_at')
     serializer_class = OpportunitySerializer
+    pagination_class = OpportunityPagination
     permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     parser_classes = [MultiPartParser, FormParser, parsers.JSONParser]
     filter_backends = [DjangoFilterBackend]
@@ -118,8 +126,8 @@ class OpportunityViewSet(viewsets.ModelViewSet):
         
         opportunity = serializer.save(
             created_by=self.request.user,
-            status='pending',
-            is_active=False
+            status='approved',
+            is_active=True
         )
         self._notify_admin_submission(opportunity)
 
@@ -225,19 +233,7 @@ class OpportunityViewSet(viewsets.ModelViewSet):
         if instance.created_by != request.user and not (request.user.is_staff or request.user.is_superuser):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You can only edit your own opportunities.")
-        
-        # If opportunity was approved, reset to pending on update
-        if instance.status == 'approved':
-            # Update status and is_active in the validated data
-            response = super().update(request, *args, **kwargs)
-            instance.refresh_from_db()
-            instance.status = 'pending'
-            instance.is_active = False
-            instance.save()
-            # Return updated serializer with new status
-            serializer = self.get_serializer(instance)
-            return Response(serializer.data)
-        
+
         return super().update(request, *args, **kwargs)
     
     def destroy(self, request, *args, **kwargs):
@@ -250,6 +246,37 @@ class OpportunityViewSet(viewsets.ModelViewSet):
             raise PermissionDenied("You can only delete your own opportunities.")
         
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def hide(self, request, pk=None):
+        """Staff can take a live post off the feed without deleting it."""
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Only staff can hide an opportunity.'}, status=status.HTTP_403_FORBIDDEN)
+        opportunity = self.get_object()
+        opportunity.is_active = False
+        opportunity.save(update_fields=['is_active', 'updated_at'])
+        return Response(self.get_serializer(opportunity).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    def report(self, request, pk=None):
+        try:
+            opportunity = Opportunity.objects.get(pk=pk)
+        except (Opportunity.DoesNotExist, ValueError, TypeError):
+            return Response({'error': 'Opportunity not found.'}, status=status.HTTP_404_NOT_FOUND)
+        reason = str(request.data.get('reason') or '').strip()
+        if len(reason) < 3:
+            return Response({'error': 'Add a short reason.'}, status=status.HTTP_400_BAD_REQUEST)
+        if opportunity.created_by_id == request.user.id:
+            return Response({'error': 'You cannot report your own post.'}, status=status.HTTP_400_BAD_REQUEST)
+        _, created = OpportunityReport.objects.get_or_create(
+            opportunity=opportunity,
+            reporter=request.user,
+            defaults={'reason': reason[:500]},
+        )
+        if not created:
+            return Response({'error': 'You already reported this.'}, status=status.HTTP_409_CONFLICT)
+        self._notify_admin_report(opportunity, reason[:500], request.user)
+        return Response({'reported': True}, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def download_media(self, request, pk=None):
@@ -776,13 +803,13 @@ class OpportunityViewSet(viewsets.ModelViewSet):
             
             university_name = opportunity.university.name if opportunity.university else "All Universities"
             
-            title = "New Opportunity Awaiting Approval"
-            body = f"A new opportunity has been submitted and requires your approval.\n\n"
+            title = "New opportunity posted"
+            body = f"A new opportunity is live.\n\n"
             body += f"Title: {opportunity_title}\n"
             body += f"Category: {category}\n"
             body += f"University: {university_name}\n"
-            body += f"Submitted by: {submitted_by} ({submitted_by_email})\n\n"
-            body += "Please review and approve or reject this opportunity."
+            body += f"Posted by: {submitted_by} ({submitted_by_email})\n\n"
+            body += "Open it to hide or delete it."
             
             # Create notification link (adjust path as needed)
             notification_link = f"/opportunities/{opportunity.id}" if opportunity.id else None
@@ -805,16 +832,16 @@ class OpportunityViewSet(viewsets.ModelViewSet):
         admin_email = getattr(settings, 'OPPORTUNITY_REVIEW_NOTIFY_EMAIL', None)
         review_url = getattr(settings, 'OPPORTUNITY_ADMIN_REVIEW_URL', '')
         if admin_email:
-            subject = "New Opportunity Awaiting Approval"
+            subject = "New opportunity posted"
             body_lines = [
                 "Hello admin team,",
                 "",
-                "A new opportunity has been submitted and is pending approval.",
+                "A new opportunity is live.",
                 f"Title: {opportunity.title}",
-                f"Submitted by: {getattr(opportunity.created_by, 'email', 'Unknown user') if opportunity.created_by else 'Unknown'}",
+                f"Posted by: {getattr(opportunity.created_by, 'email', 'Unknown user') if opportunity.created_by else 'Unknown'}",
                 "",
-                "You can review and approve it using the link below:",
-                review_url,
+                "Open it to hide or delete it:",
+                review_url or f"/opportunities/{opportunity.id}",
             ]
 
             try:
@@ -827,3 +854,27 @@ class OpportunityViewSet(viewsets.ModelViewSet):
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error("Failed to send opportunity submission email: %s", exc)
+
+    def _notify_admin_report(self, opportunity, reason, reporter):
+        from api.models import Notification, User
+        from django.db import models
+
+        try:
+            admin_users = User.objects.filter(models.Q(is_superuser=True) | models.Q(is_staff=True)).distinct()
+            reporter_name = getattr(reporter, 'display_name', None) or getattr(reporter, 'email', 'Someone')
+            link = f"/opportunities/{opportunity.id}"
+            body = (
+                f"{reporter_name} reported \"{opportunity.title}\".\n\n"
+                f"Reason: {reason}\n\n"
+                "Open it to hide or delete it."
+            )
+            for admin in admin_users:
+                Notification.objects.create(
+                    user=admin,
+                    title="Opportunity reported",
+                    body=body,
+                    notification_type='info',
+                    link=link,
+                )
+        except Exception as exc:
+            logger.error("Failed to notify staff about an opportunity report: %s", exc)

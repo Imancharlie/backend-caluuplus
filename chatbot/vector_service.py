@@ -4,6 +4,7 @@ from django.core.cache import cache
 from django.db.models import Q
 import re
 import logging
+import threading
 from functools import lru_cache
 
 # Optional imports - gracefully handle if not available
@@ -25,8 +26,13 @@ class VectorSearchService:
     def __init__(self):
         self.model = None
         self.embeddings_cache = {}
-        self._load_model()
-        
+        # Loading the sentence-transformer takes ~85s on a cold process. Doing it
+        # in __init__ blocked the first chat request for over a minute, so the
+        # model is loaded lazily: the first search scores with keyword matching
+        # (milliseconds) and warms the model in the background for later calls.
+        self._model_load_started = False
+        self._model_loading = False
+
         # Keyword categories for intent detection and hybrid search
         self.keyword_categories = {
             'schedule': ['class', 'schedule', 'timetable', 'when', 'time', 'today', 'tomorrow', 'next class'],
@@ -53,6 +59,27 @@ class VectorSearchService:
             'program_info': 'program_info',
         }
     
+    def ensure_model_async(self) -> None:
+        """Start loading the embedding model in a background thread (once).
+
+        Never blocks the caller. After the thread finishes, ``self.model`` is
+        set and subsequent searches use the semantic (vectorised) path.
+        """
+        if self._model_load_started or self.model is not None:
+            return
+        self._model_load_started = True
+
+        def _warm():
+            try:
+                self._load_model()
+                if self.model is not None:
+                    logger.info("Embedding model warmed up; semantic RAG is now active")
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"Embedding model warm-up failed: {e}")
+
+        thread = threading.Thread(target=_warm, name="chatbot-embedding-warmup", daemon=True)
+        thread.start()
+
     def _load_model(self):
         """Lazy load the sentence transformer model with graceful error handling"""
         self.model = None
@@ -371,6 +398,10 @@ class VectorSearchService:
                use_semantic: bool = True, use_hybrid: bool = True) -> List[Dict[str, Any]]:
         """Enhanced search with semantic embeddings and hybrid approach"""
         try:
+            # Kick off the (slow) model load in the background the first time a
+            # search runs, so the current request still answers immediately.
+            self.ensure_model_async()
+
             # OPTIMIZATION: Check cache first with normalized query
             # Normalize query for better cache hits (lowercase, strip whitespace)
             normalized_query = query.lower().strip()

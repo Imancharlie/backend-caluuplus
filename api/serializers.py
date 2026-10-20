@@ -104,9 +104,15 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
 
 class UniversitySerializer(serializers.ModelSerializer):
+    grade_scheme = serializers.ChoiceField(
+        choices=University.GRADE_SCHEMES,
+        default=University.GRADE_SCHEME_GRADES,
+        required=False,
+    )
+
     class Meta:
         model = University
-        fields = ('id', 'name', 'country')
+        fields = ('id', 'name', 'country', 'grade_scheme')
 
 
 class CollegeSerializer(serializers.ModelSerializer):
@@ -195,16 +201,43 @@ class StudentSerializer(serializers.ModelSerializer):
     program = ProgramSerializer(read_only=True)
     courses = serializers.SerializerMethodField()
     has_courses = serializers.BooleanField(read_only=True)
+    current_semester = serializers.SerializerMethodField()
+    current_semester_starts = serializers.SerializerMethodField()
     class Meta:
         model = Student
-        fields = ('id', 'university', 'college', 'program', 'year', 'semester', 'courses', 'has_courses')
+        fields = (
+            'id', 'university', 'college', 'program', 'year', 'semester',
+            'courses', 'has_courses', 'current_semester', 'current_semester_starts',
+        )
+
+    def _calendar_window(self):
+        if not hasattr(self, '_semester_window'):
+            from academia.models import GlobalSemesterCalendar
+            self._semester_window = GlobalSemesterCalendar.current()
+        return self._semester_window
+
+    def get_current_semester(self, obj):
+        semester, _start = self._calendar_window()
+        return semester
+
+    def get_current_semester_starts(self, obj):
+        _semester, start = self._calendar_window()
+        return start.isoformat() if start else None
 
     def get_courses(self, obj):
         try:
-            store = obj.student_courses.ensure_periods()
-            if isinstance(store, dict) and 'periods' in store:
-                return store
-            return {'_v': 2, 'periods': {}}
+            store = obj.student_courses
+            periods = store.get_periods()
+            program_id = str(obj.program_id or '')
+            visible = {}
+            for key, items in periods.items():
+                kept = [
+                    c for c in items
+                    if not program_id or not c.get('program') or str(c.get('program')) == program_id
+                ]
+                if kept:
+                    visible[key] = kept
+            return {'_v': 2, 'periods': visible}
         except ObjectDoesNotExist:
             return {'_v': 2, 'periods': {}}
 
@@ -217,6 +250,16 @@ class StudentCreateUpdateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        new_program = validated_data.get('program', instance.program)
+        new_id = getattr(new_program, 'pk', new_program)
+        old_id = instance.program_id
+        if old_id and new_id and str(old_id) != str(new_id):
+            store = StudentCourse.objects.filter(student=instance).first()
+            if store:
+                store.stamp_program(old_id)
+        return super().update(instance, validated_data)
 
 
 class StudentTermSerializer(serializers.ModelSerializer):
@@ -370,7 +413,7 @@ class ArticleSerializer(serializers.ModelSerializer):
         if value is None or str(value).strip() == '':
             return 'general'
 
-        normalized = str(value).strip().lower()
+        normalized = str(value).strip().lower().replace('-', '_').replace(' ', '_')
         allowed_values = {choice for choice, _label in Article._meta.get_field('category').choices}
         if normalized not in allowed_values:
             raise serializers.ValidationError(

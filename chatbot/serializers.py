@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Conversation, Message, ChatHistory
+from .models import Conversation, Message, ChatHistory, KnowledgeSuggestion
 
 
 class MessageSerializer(serializers.ModelSerializer):
@@ -30,3 +30,19 @@ class ChatHistorySerializer(serializers.ModelSerializer):
         model = ChatHistory
         fields = ["id", "user", "personality_notes", "instructions", "last_updated"]
         read_only_fields = ["id", "user", "last_updated"]
+
+
+class KnowledgeSuggestionSerializer(serializers.ModelSerializer):
+    user_display = serializers.CharField(source='user.display_name', read_only=True)
+    reviewed_by_display = serializers.CharField(source='reviewed_by.display_name', read_only=True)
+
+    class Meta:
+        model = KnowledgeSuggestion
+        fields = [
+            'id', 'query_text', 'response_text', 'trigger',
+            'confidence_score', 'status', 'created_at',
+            'occurrence_count', 'last_seen_at',
+            'user', 'user_display', 'reviewed_by', 'reviewed_by_display', 'reviewed_at'
+        ]
+        read_only_fields = ['id', 'query_hash', 'created_at', 'reviewed_at',
+                            'occurrence_count', 'last_seen_at']

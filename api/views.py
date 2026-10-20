@@ -6,15 +6,20 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from django.utils import timezone
-from django.core.cache import cache
 from django.db import models
 import re
 import time
 from .gpa_privacy import encrypt_gpa_for_user
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleComment, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation, StudentTerm, StudentCourseEnrollment
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleComment, ArticleLike, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, AmbassadorActivity, AmbassadorMessage, UniversityLink, GPACalculation, StudentTerm, StudentCourseEnrollment
 from .serializers import ArticleSerializer
 from .serializers import ArticleCommentSerializer, ArticleCommentCreateSerializer
-from .utils import restrict_queryset_to_user_universities, assert_user_can_modify_related_university
+from .utils import (
+    restrict_queryset_to_user_universities,
+    assert_user_can_modify_related_university,
+    safe_cache_get,
+    safe_cache_set,
+    safe_cache_delete,
+)
 from .permissions import user_is_admin, user_is_ambassador
 from .serializers import (
     PasswordChangeSerializer, UserUpdateSerializer, UserSearchSerializer,
@@ -76,6 +81,9 @@ def _all_student_courses(student_course):
                     cd['semester'] = int(sem)
                 except (TypeError, ValueError):
                     pass
+            program_id = str(getattr(student_course.student, 'program_id', '') or '')
+            if program_id and cd.get('program') and str(cd.get('program')) != program_id:
+                continue
             out.append(cd)
     return out
 
@@ -250,7 +258,7 @@ def rate_limit(max_calls=10, time_window=60):
             cache_key = f"rate_limit_{user_id}_{endpoint}"
             
             # Get current call count
-            current_calls = cache.get(cache_key, 0)
+            current_calls = safe_cache_get(cache_key, 0)
             
             if current_calls >= max_calls:
                 return Response({
@@ -263,7 +271,7 @@ def rate_limit(max_calls=10, time_window=60):
                 }, status=status.HTTP_429_TOO_MANY_REQUESTS)
             
             # Increment call count
-            cache.set(cache_key, current_calls + 1, time_window)
+            safe_cache_set(cache_key, current_calls + 1, timeout=time_window)
             
             return view_func(request, *args, **kwargs)
         return wrapper
@@ -480,12 +488,12 @@ class FirebaseLoginView(APIView):
                     was_linking = not user.firebase_uid
                     user.firebase_uid = uid
                     user.save(update_fields=['firebase_uid'])
-                    # Update profile picture and name from Google if available
-                    if picture and not user.profile_picture:
-                        user.profile_picture = picture
+                    # Google's photo is the default. An uploaded photo is left alone.
+                    from .onboarding import assign_firebase_picture
+                    picture_updated = assign_firebase_picture(user, picture)
                     if name and (not user.display_name or user.display_name == user.email.split('@')[0]):
                         user.display_name = name
-                    if picture or name:
+                    if picture_updated or name:
                         user.save(update_fields=['profile_picture', 'display_name'])
                 except User.DoesNotExist:
                     pass
@@ -530,8 +538,8 @@ class FirebaseLoginView(APIView):
                 user.display_name = name
                 updated = True
 
-            if picture and user.profile_picture != picture:
-                user.profile_picture = picture
+            from .onboarding import assign_firebase_picture
+            if assign_firebase_picture(user, picture):
                 updated = True
 
             if updated:
@@ -1410,14 +1418,34 @@ def save_courses_batch(request):
     try:
         courses_data = request.data.get('courses', [])
 
-        if not courses_data:
+        student = Student.objects.get(user=request.user)
+        student_course, _ = StudentCourse.objects.get_or_create(student=student)
+
+        explicit_year = request.data.get('year')
+        explicit_sem = request.data.get('semester')
+        if not courses_data and (explicit_year is None or explicit_sem is None):
             return Response(
                 {'error': 'No courses provided'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        student = Student.objects.get(user=request.user)
-        student_course, _ = StudentCourse.objects.get_or_create(student=student)
+        if explicit_year is not None and explicit_sem is not None:
+            try:
+                p_year = int(explicit_year)
+                p_sem = int(explicit_sem)
+            except (TypeError, ValueError):
+                return Response({'error': 'Invalid year or semester'}, status=status.HTTP_400_BAD_REQUEST)
+            cleaned = student_course.set_period(p_year, p_sem, courses_data or [], save=False)
+            result = _ensure_catalog_contribution(student, p_year, p_sem, cleaned, reward=True)
+            student_course.save()
+            response_data = {
+                'message': f'Successfully saved {len(cleaned)} courses',
+                'total_courses': len(cleaned),
+                'courses': _all_student_courses(student_course),
+            }
+            if result:
+                response_data['contributed_courses'] = result['contributed']
+                response_data['rewarded_tokens'] = result['rewarded']
+            return Response(response_data, status=status.HTTP_201_CREATED)
 
         # Group by (year, semester); courses without those go to the student's
         # current year/semester so they are never dropped.
@@ -1559,6 +1587,34 @@ def student_courses(request):
                 contributed += res['contributed']
                 rewarded += res['rewarded']
     elif isinstance(flat_courses, list):
+        explicit_year = payload.get('year')
+        explicit_sem = payload.get('semester')
+        if explicit_year is not None and explicit_sem is not None:
+            try:
+                p_year = int(explicit_year)
+                p_sem = int(explicit_sem)
+            except (TypeError, ValueError):
+                return Response({'error': 'Invalid year or semester'}, status=status.HTTP_400_BAD_REQUEST)
+            cleaned = student_course.set_period(p_year, p_sem, flat_courses, save=False)
+            total_saved += len(cleaned)
+            processed_periods.append((p_year, p_sem))
+            res = _ensure_catalog_contribution(student, p_year, p_sem, cleaned, reward=True)
+            if res:
+                contributed += res['contributed']
+                rewarded += res['rewarded']
+            student_course.save()
+            message = f'Successfully saved {total_saved} courses across {len(processed_periods)} period(s)'
+            if contributed:
+                message += f' ({contributed} catalog(s) contributed, {rewarded} tokens rewarded)'
+            return Response({
+                'message': message,
+                'total_saved': total_saved,
+                'periods': student_course.get_periods(),
+                'contributed_courses': contributed,
+                'rewarded_tokens': rewarded,
+            }, status=status.HTTP_200_OK)
+        if not flat_courses:
+            return Response({'error': 'No courses provided'}, status=status.HTTP_400_BAD_REQUEST)
         grouped = {}
         for c in flat_courses:
             if not isinstance(c, dict):
@@ -1822,7 +1878,7 @@ def _points_for_grade(university, grade):
                 return round(float(lp[g]), 2)
             except (TypeError, ValueError):
                 return None
-    default_map = {'A': 5.0, 'B+': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'E': 0.0}
+    default_map = {'A': 5.0, 'B+': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'E': 0.0, 'F': 0.0}
     return default_map.get(g)
 
 
@@ -1850,7 +1906,25 @@ def _points_for_marks(university, marks):
                     best = (slope * marks) + intercept
             if best is not None:
                 return round(max(0.0, best), 2)
-    return None
+    return _default_points_for_marks(marks)
+
+
+def _default_points_for_marks(marks):
+    """Same bands as the web GPA calculator when a university has no custom thresholds."""
+    marks = float(marks)
+    if marks >= 75:
+        points = 0.024 * marks + 2.6
+    elif marks >= 70:
+        points = 0.2 * marks - 10.5
+    elif marks >= 60:
+        points = 0.08 * marks - 2.1
+    elif marks >= 50:
+        points = 0.07 * marks - 1.5
+    elif marks >= 40:
+        points = 0.04 * marks - 0.1
+    else:
+        points = marks / 28
+    return round(max(0.0, points), 2)
 
 
 @api_view(['GET'])
@@ -2051,88 +2125,207 @@ def remove_student_term_course(request, year, semester, course_id):
     return Response({'error': 'Course not found in this term'}, status=status.HTTP_404_NOT_FOUND)
 
 
+def _course_credits(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _json_period_courses(student):
+    """Raw course dicts from the JSON period store, including any stored grade."""
+    record = StudentCourse.objects.filter(student=student).first()
+    if record is None:
+        return []
+    raw = record.courses
+    periods = {}
+    if isinstance(raw, dict) and isinstance(raw.get('periods'), dict):
+        periods = raw['periods']
+    elif isinstance(raw, list):
+        periods = {'all': raw}
+    rows = []
+    for items in periods.values():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                rows.append(item)
+    return rows
+
+
+def _gpa_sources(student):
+    """Graded course rows. Enrollments win; otherwise use the JSON period store."""
+    enrollments = list(
+        StudentCourseEnrollment.objects.filter(term__student=student).select_related('term')
+    )
+    if enrollments:
+        return [
+            {
+                'id': str(row.id),
+                'code': row.code,
+                'name': row.name,
+                'credits': _course_credits(row.credits),
+                'grade': row.grade,
+                'marks': row.marks,
+                'points': row.points,
+            }
+            for row in enrollments
+        ]
+    rows = []
+    for item in _json_period_courses(student):
+        rows.append({
+            'id': str(item.get('id') or item.get('course_id') or ''),
+            'code': item.get('code') or item.get('course_code') or '',
+            'name': item.get('name') or item.get('course_name') or '',
+            'credits': _course_credits(item.get('credits') if item.get('credits') is not None else item.get('course_credits')),
+            'grade': item.get('grade'),
+            'marks': item.get('marks'),
+            'points': item.get('points'),
+        })
+    return rows
+
+
+def _points_for_row(student, row):
+    stored = row.get('points')
+    if stored not in (None, ''):
+        try:
+            return round(float(stored), 2)
+        except (TypeError, ValueError):
+            pass
+    university = getattr(student, 'university', None)
+    if university and getattr(university, 'grade_scheme', '') == 'marks' and row.get('marks') is not None:
+        return _points_for_marks(university, row.get('marks'))
+    return _points_for_grade(university, row.get('grade'))
+
+
+def _gpa_payload(student):
+    breakdown = []
+    total_credits = 0
+    total_points = 0.0
+    graded = 0
+    for row in _gpa_sources(student):
+        credits = row['credits']
+        points = _points_for_row(student, row)
+        counted = points is not None and credits > 0
+        if counted:
+            total_credits += credits
+            total_points += points * credits
+            graded += 1
+        breakdown.append({
+            'course_code': row['code'],
+            'course_name': row['name'],
+            'credits': credits,
+            'grade': row.get('grade') or '',
+            'points': points if points is not None else 0,
+            'contribution': round((points or 0) * credits, 2),
+        })
+    gpa = round(total_points / total_credits, 2) if total_credits else 0
+    return {
+        'gpa': gpa,
+        'total_credits': total_credits,
+        'total_points': round(total_points, 2),
+        'graded_courses': graded,
+        'breakdown': breakdown,
+    }
+
+
+def _required_grade(target_gpa):
+    if target_gpa >= 4.5:
+        return 'A'
+    if target_gpa >= 4.0:
+        return 'B+'
+    return 'B'
+
+
 # GPA Calculation Views
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def calculate_gpa(request):
-    try:
-        student = Student.objects.get(user=request.user)
-    except Student.DoesNotExist:
-        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    gpa_data = student.get_gpa_breakdown()
-    return Response(gpa_data)
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+    return Response(_gpa_payload(student))
 
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def generate_target_gpa(request):
-    try:
-        student = Student.objects.get(user=request.user)
-    except Student.DoesNotExist:
-        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
     serializer = TargetGPASerializer(data=request.data)
-    if serializer.is_valid():
-        target_gpa = serializer.validated_data['target_gpa']
-        
-        # Get current GPA
-        current_gpa = student.get_gpa()
-        
-        # Simple target GPA calculation - set all ungraded courses to required grade
-        student_courses = StudentCourse.objects.filter(student=student)
-        grades = []
-        
-        for student_course in student_courses:
-            if not student_course.grade:
-                # Calculate required grade for target GPA
-                # This is a simplified calculation
-                required_grade = 'A' if target_gpa >= 4.5 else 'B+' if target_gpa >= 4.0 else 'B'
-                required_points = StudentCourse.GRADE_POINTS[required_grade]
-                
-                grades.append({
-                    'course_id': str(student_course.course.id),
-                    'course_code': student_course.course.code,
-                    'course_name': student_course.course.name,
-                    'credits': student_course.course.credits,
-                    'required_grade': required_grade,
-                    'required_points': required_points
-                })
-        
-        # Calculate accuracy
-        accuracy = "excellent" if abs(current_gpa - target_gpa) < 0.1 else "good" if abs(current_gpa - target_gpa) < 0.3 else "needs_improvement"
-        
-        return Response({
-            'message': 'Target grades generated successfully',
-            'target_gpa': target_gpa,
-            'actual_gpa': current_gpa,
-            'accuracy': accuracy,
-            'grades': grades
-        }, status=status.HTTP_200_OK)
-    
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    target_gpa = serializer.validated_data['target_gpa']
+    current = _gpa_payload(student)
+    required_grade = _required_grade(target_gpa)
+    required_points = _points_for_grade(getattr(student, 'university', None), required_grade)
+    grades = []
+    for row in _gpa_sources(student):
+        if row.get('grade'):
+            continue
+        grades.append({
+            'course_id': row['id'],
+            'course_code': row['code'],
+            'course_name': row['name'],
+            'credits': row['credits'],
+            'required_grade': required_grade,
+            'required_points': required_points if required_points is not None else 0,
+        })
+
+    current_gpa = current['gpa']
+    gap = abs(current_gpa - float(target_gpa))
+    accuracy = 'excellent' if gap < 0.1 else 'good' if gap < 0.3 else 'needs_improvement'
+    return Response({
+        'message': 'Target grades generated successfully',
+        'target_gpa': target_gpa,
+        'actual_gpa': current_gpa,
+        'accuracy': accuracy,
+        'grades': grades,
+    }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def reset_grades(request):
-    try:
-        student = Student.objects.get(user=request.user)
-    except Student.DoesNotExist:
-        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
-    # Reset all grades to A
-    student_courses = StudentCourse.objects.filter(student=student)
-    updated_count = 0
-    
-    for student_course in student_courses:
-        student_course.grade = 'A'
-        student_course.save()
-        updated_count += 1
-    
+    student = _get_student(request)
+    if isinstance(student, Response):
+        return student
+
+    points = _points_for_grade(getattr(student, 'university', None), 'A')
+    updated = StudentCourseEnrollment.objects.filter(term__student=student).update(
+        grade='A',
+        points=points if points is not None else 5,
+    )
+
+    if updated == 0:
+        record = StudentCourse.objects.filter(student=student).first()
+        if record is not None:
+            raw = record.courses
+            changed = 0
+            buckets = []
+            if isinstance(raw, dict) and isinstance(raw.get('periods'), dict):
+                buckets = list(raw['periods'].values())
+            elif isinstance(raw, list):
+                buckets = [raw]
+            for items in buckets:
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if isinstance(item, dict):
+                        item['grade'] = 'A'
+                        item['points'] = points if points is not None else 5
+                        changed += 1
+            if changed:
+                record.courses = raw
+                record.save(update_fields=['courses'])
+                updated = changed
+
     return Response({
         'message': 'All grades reset to A',
-        'courses_updated': updated_count
+        'courses_updated': updated,
     }, status=status.HTTP_200_OK)
 
 
@@ -2199,11 +2392,10 @@ def gpa_calculation_create(request):
 @rate_limit(max_calls=20, time_window=60)  # Max 20 calls per 60 seconds
 def user_basic_details(request):
     """Get basic user details with caching"""
-    from django.core.cache import cache
     
     # Cache user details for 60 seconds to reduce database load
     cache_key = f"user_details_{request.user.id}"
-    cached_data = cache.get(cache_key)
+    cached_data = safe_cache_get(cache_key)
     
     if cached_data is not None:
         return Response(cached_data, status=status.HTTP_200_OK)
@@ -2218,6 +2410,7 @@ def user_basic_details(request):
             'display_name': user.display_name,
             'username': user.username,
             'is_student': user.is_student,
+            'profile_picture': user.profile_picture or None,
             'student_profile': {
                 'id': str(student.id),
                 'university': student.university.name,
@@ -2235,11 +2428,12 @@ def user_basic_details(request):
             'display_name': user.display_name,
             'username': user.username,
             'is_student': user.is_student,
+            'profile_picture': user.profile_picture or None,
             'student_profile': None
         }
     
     # Cache for 60 seconds
-    cache.set(cache_key, data, 60)
+    safe_cache_set(cache_key, data, timeout=60)
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -2276,6 +2470,8 @@ def user_hobbies(request):
             # Save hobbies to user
             user.hobbies = hobbies
             user.save(update_fields=['hobbies'])
+            from .onboarding import mark_interests_saved
+            mark_interests_saved(user)
             
             return Response({
                 'message': 'Hobbies saved successfully',
@@ -2301,6 +2497,8 @@ def user_hobbies(request):
             # Update hobbies for user
             user.hobbies = hobbies
             user.save(update_fields=['hobbies'])
+            from .onboarding import mark_interests_saved
+            mark_interests_saved(user)
             
             return Response({
                 'message': 'Hobbies updated successfully',
@@ -2319,17 +2517,16 @@ def user_hobbies(request):
 @permission_classes([permissions.IsAuthenticated])
 def notification_unread_count(request):
     """Get unread notification count with caching and graceful rate limiting"""
-    from django.core.cache import cache
     
     # Check rate limit manually for better control
     user_id = getattr(request.user, 'id', 'anonymous')
     rate_limit_key = f"rate_limit_{user_id}_/api/notifications/unread-count/"
-    current_calls = cache.get(rate_limit_key, 0)
+    current_calls = safe_cache_get(rate_limit_key, 0)
     
     if current_calls >= 30:  # Max 30 calls per 60 seconds
         # Return cached data instead of error
         cache_key = f"unread_count_{request.user.id}"
-        cached_count = cache.get(cache_key, 0)
+        cached_count = safe_cache_get(cache_key, 0)
         return Response({
             'unread': cached_count,
             'cached': True,
@@ -2337,15 +2534,15 @@ def notification_unread_count(request):
         }, status=status.HTTP_200_OK)
     
     # Increment rate limit counter
-    cache.set(rate_limit_key, current_calls + 1, 60)
+    safe_cache_set(rate_limit_key, current_calls + 1, timeout=60)
     
     # Get unread count with caching
     cache_key = f"unread_count_{request.user.id}"
-    unread_count = cache.get(cache_key)
+    unread_count = safe_cache_get(cache_key)
     
     if unread_count is None:
         unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
-        cache.set(cache_key, unread_count, 30)  # Cache for 30 seconds
+        safe_cache_set(cache_key, unread_count, timeout=30)  # Cache for 30 seconds
     
     return Response({
         'unread': unread_count,
@@ -2443,7 +2640,7 @@ def notification_mark_read(request, notification_id):
         
         # Invalidate the unread count cache
         cache_key = f"unread_count_{request.user.id}"
-        cache.delete(cache_key)
+        safe_cache_delete(cache_key)
     
     return Response({
         'id': str(notification.id),
@@ -2466,7 +2663,7 @@ def notification_mark_all_read(request):
     
     # Invalidate the unread count cache
     cache_key = f"unread_count_{request.user.id}"
-    cache.delete(cache_key)
+    safe_cache_delete(cache_key)
     
     return Response({
         'updated_count': updated_count,
@@ -2727,7 +2924,7 @@ def timetable_my(request):
     try:
         student = Student.objects.get(user=request.user)
         semester = request.GET.get('semester', student.semester)
-        academic_year = request.GET.get('academic_year', '1')
+        academic_year = request.GET.get('academic_year') or str(student.year)
         
         slots = TimetableSlot.objects.filter(
             student=student,
@@ -2744,6 +2941,9 @@ def timetable_my(request):
                 'day_of_week': slot.day_of_week,
                 'time_slot': slot.time_slot,
                 'venue': slot.venue,
+                'venue_id': str(slot.venue_place_id) if slot.venue_place_id else None,
+                'status': slot.status,
+                'status_note': slot.status_note,
                 'instructor_name': slot.instructor,
                 'semester': slot.semester,
                 'academic_year': slot.academic_year
@@ -2763,31 +2963,42 @@ def timetable_my(request):
 @permission_classes([permissions.IsAuthenticated])
 def timetable_slots(request):
     """Get or create timetable slots"""
-    try:
-        student = Student.objects.get(user=request.user)
-    except Student.DoesNotExist:
-        return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    
+    student = Student.objects.filter(user=request.user).first()
+
     if request.method == 'GET':
         """Get timetable slots with filtering"""
         # Get query parameters
         student_id = request.GET.get('student')
-        semester = request.GET.get('semester', student.semester)
-        academic_year = request.GET.get('academic_year', '2024')
         day = request.GET.get('day')
-        
-        # Filter by student if specified
-        if student_id:
+
+        # Another student's timetable is staff-only. Students always read their own.
+        if student_id and (student is None or str(student.id) != str(student_id)):
+            if not user_is_admin(request.user):
+                return Response(
+                    {'error': 'You can only view your own timetable'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             try:
                 target_student = Student.objects.get(id=student_id)
-                slots = TimetableSlot.objects.filter(student=target_student)
             except Student.DoesNotExist:
                 return Response({'error': 'Student not found'}, status=status.HTTP_404_NOT_FOUND)
+            slots = TimetableSlot.objects.filter(student=target_student)
         else:
+            if student is None:
+                return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
+            target_student = student
             slots = TimetableSlot.objects.filter(student=student)
-        
-        # Apply filters
-        slots = slots.filter(semester=semester, academic_year=academic_year)
+
+        # Default the year to the viewed student's programme year. Both timetable
+        # endpoints used to disagree ('1' vs '2024'), which hid the same slots.
+        semester = request.GET.get('semester', target_student.semester if target_student else None)
+        academic_year = request.GET.get('academic_year') or (
+            str(target_student.year) if target_student and target_student.year is not None else None
+        )
+        if semester not in (None, ''):
+            slots = slots.filter(semester=semester)
+        if academic_year:
+            slots = slots.filter(academic_year=academic_year)
         
         if day:
             slots = slots.filter(day_of_week=day.lower())
@@ -2811,6 +3022,9 @@ def timetable_slots(request):
                 'academic_year': slot.academic_year,
                 'class_type': slot.class_type,
                 'venue': slot.venue,
+                'venue_id': str(slot.venue_place_id) if slot.venue_place_id else None,
+                'status': slot.status,
+                'status_note': slot.status_note,
                 'instructor': slot.instructor,
                 'description': slot.description
             })
@@ -2819,6 +3033,8 @@ def timetable_slots(request):
     
     elif request.method == 'POST':
         """Create new timetable slot"""
+        if student is None:
+            return Response({'error': 'Student profile not found'}, status=status.HTTP_404_NOT_FOUND)
         data = request.data.copy()
         
         # Debug: Log the received data
@@ -2929,7 +3145,7 @@ def timetable_slots(request):
                 time_slot=time_slot,
                 day_of_week=day_of_week,
                 semester=data.get('semester', student.semester),
-                academic_year=data.get('academic_year', '2024'),
+                academic_year=data.get('academic_year') or str(student.year),
                 class_type=data.get('class_type', 'lecture'),
                 venue=data.get('venue'),
                 instructor=data.get('instructor'),
@@ -2947,6 +3163,9 @@ def timetable_slots(request):
                 'academic_year': slot.academic_year,
                 'class_type': slot.class_type,
                 'venue': slot.venue,
+                'venue_id': str(slot.venue_place_id) if slot.venue_place_id else None,
+                'status': slot.status,
+                'status_note': slot.status_note,
                 'instructor': slot.instructor,
                 'description': slot.description
             }, status=status.HTTP_201_CREATED)
@@ -2982,6 +3201,9 @@ def timetable_slot_detail(request, slot_id):
             'academic_year': slot.academic_year,
             'class_type': slot.class_type,
             'venue': slot.venue,
+            'venue_id': str(slot.venue_place_id) if slot.venue_place_id else None,
+            'status': slot.status,
+            'status_note': slot.status_note,
             'instructor': slot.instructor,
             'description': slot.description
         })
@@ -3067,6 +3289,9 @@ def timetable_slot_detail(request, slot_id):
             'academic_year': slot.academic_year,
             'class_type': slot.class_type,
             'venue': slot.venue,
+            'venue_id': str(slot.venue_place_id) if slot.venue_place_id else None,
+            'status': slot.status,
+            'status_note': slot.status_note,
             'instructor': slot.instructor,
             'description': slot.description
         })
@@ -3173,7 +3398,7 @@ def timetable_bulk_create(request):
                 time_slot=slot_data['time_slot'],
                 day_of_week=slot_data['day_of_week'].lower(),
                 semester=slot_data.get('semester', student.semester),
-                academic_year=slot_data.get('academic_year', '2024'),
+                academic_year=slot_data.get('academic_year') or str(student.year),
                 class_type=slot_data.get('class_type', 'lecture'),
                 venue=slot_data.get('venue'),
                 instructor=slot_data.get('instructor'),
@@ -3191,6 +3416,9 @@ def timetable_bulk_create(request):
                 'academic_year': slot.academic_year,
                 'class_type': slot.class_type,
                 'venue': slot.venue,
+                'venue_id': str(slot.venue_place_id) if slot.venue_place_id else None,
+                'status': slot.status,
+                'status_note': slot.status_note,
                 'instructor': slot.instructor,
                 'description': slot.description
             })
@@ -3331,9 +3559,9 @@ def article_list(request):
             'id': article.category,
             'name': article.get_category_display(),
             'slug': article.category,
-            'description': f"{article.get_category_display()} content",
-            'color': f"bg-{article.category}-500",
-            'icon': "📚"
+            'description': _article_category_meta(article.category)[2],
+            'color': _article_category_meta(article.category)[0],
+            'icon': _article_category_meta(article.category)[1]
         }
         article_data[i]['category'] = category_data
         
@@ -3346,7 +3574,10 @@ def article_list(request):
         article_data[i]['author'] = author_data
         
         # Add frontend-specific fields
-        article_data[i]['is_liked'] = False
+        article_data[i]['is_liked'] = (
+            request.user.is_authenticated
+            and ArticleLike.objects.filter(article=article, user=request.user).exists()
+        )
         article_data[i]['is_saved'] = False
         article_data[i]['is_shared'] = False
     
@@ -3393,9 +3624,9 @@ def article_detail(request, article_id):
         'id': article.category,
         'name': article.get_category_display(),
         'slug': article.category,
-        'description': f"{article.get_category_display()} content",
-        'color': f"bg-{article.category}-500",
-        'icon': "📚"
+        'description': _article_category_meta(article.category)[2],
+        'color': _article_category_meta(article.category)[0],
+        'icon': _article_category_meta(article.category)[1]
     }
     data['category'] = category_data
     
@@ -3408,7 +3639,10 @@ def article_detail(request, article_id):
     data['author'] = author_data
     
     # Add frontend-specific fields
-    data['is_liked'] = False  # TODO: Implement user-specific like status
+    data['is_liked'] = (
+        request.user.is_authenticated
+        and ArticleLike.objects.filter(article=article, user=request.user).exists()
+    )
     data['is_saved'] = False  # TODO: Implement user-specific save status
     data['is_shared'] = False  # TODO: Implement user-specific share status
     
@@ -3432,53 +3666,35 @@ def article_view(request, article_id):
     }, status=status.HTTP_200_OK)
 
 
+def _article_category_meta(slug):
+    """Display data for every Article.category choice."""
+    palette = {
+        'academic': ('#3B82F6', '📚', 'Academic content'),
+        'campus_life': ('#10B981', '🏫', 'Campus life content'),
+        'news': ('#EF4444', '📰', 'News content'),
+        'events': ('#8B5CF6', '🎉', 'Events content'),
+        'revelational': ('#D97706', '✨', 'Revelational writing and reflection'),
+        'general': ('#6B7280', '📝', 'General content'),
+    }
+    return palette.get(slug, ('#64748B', '📄', slug.replace('_', ' ').title()))
+
+
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def article_categories(request):
-    """Get article categories"""
-    categories = [
-        {
-            'id': 'academic',
-            'name': 'Academic',
-            'slug': 'academic',
-            'description': 'Academic content',
-            'color': 'bg-green-500',
-            'icon': '📚'
-        },
-        {
-            'id': 'campus_life',
-            'name': 'Campus Life',
-            'slug': 'campus_life',
-            'description': 'Campus life content',
-            'color': 'bg-blue-500',
-            'icon': '🏫'
-        },
-        {
-            'id': 'news',
-            'name': 'News',
-            'slug': 'news',
-            'description': 'News content',
-            'color': 'bg-red-500',
-            'icon': '📰'
-        },
-        {
-            'id': 'events',
-            'name': 'Events',
-            'slug': 'events',
-            'description': 'Events content',
-            'color': 'bg-purple-500',
-            'icon': '🎉'
-        },
-        {
-            'id': 'general',
-            'name': 'General',
-            'slug': 'general',
-            'description': 'General content',
-            'color': 'bg-gray-500',
-            'icon': '📝'
-        }
-    ]
-    
+    """Categories come from Article.category choices so a new choice is one change."""
+    field = Article._meta.get_field('category')
+    categories = []
+    for slug, label in field.choices:
+        color, icon, description = _article_category_meta(slug)
+        categories.append({
+            'id': slug,
+            'name': label,
+            'slug': slug,
+            'description': description,
+            'color': color,
+            'icon': icon,
+        })
     return Response(categories, status=status.HTTP_200_OK)
 
 
@@ -3491,13 +3707,14 @@ def article_like(request, article_id):
     except Article.DoesNotExist:
         return Response({'error': 'Article not found'}, status=status.HTTP_404_NOT_FOUND)
     
-    # TODO: Implement user-specific like tracking
-    # For now, just toggle the like count
-    article.likes += 1
+    like, created = ArticleLike.objects.get_or_create(article=article, user=request.user)
+    if not created:
+        like.delete()
+    article.likes = ArticleLike.objects.filter(article=article).count()
     article.save(update_fields=['likes'])
-    
+
     return Response({
-        'is_liked': True,  # TODO: Implement proper like status
+        'is_liked': created,
         'likes': article.likes
     }, status=status.HTTP_200_OK)
 
@@ -3775,9 +3992,9 @@ def admin_article_create(request):
             'id': article.category,
             'name': article.get_category_display(),
             'slug': article.category,
-            'description': f"{article.get_category_display()} content",
-            'color': f"bg-{article.category}-500",
-            'icon': "📚"
+            'description': _article_category_meta(article.category)[2],
+            'color': _article_category_meta(article.category)[0],
+            'icon': _article_category_meta(article.category)[1]
         }
         response_data['category'] = category_data
         
@@ -3845,9 +4062,9 @@ def admin_article_detail(request, article_id):
             'id': article.category,
             'name': article.get_category_display(),
             'slug': article.category,
-            'description': f"{article.get_category_display()} content",
-            'color': f"bg-{article.category}-500",
-            'icon': "📚"
+            'description': _article_category_meta(article.category)[2],
+            'color': _article_category_meta(article.category)[0],
+            'icon': _article_category_meta(article.category)[1]
         }
         response_data['category'] = category_data
         
@@ -4209,7 +4426,6 @@ def help_message_subjects(request):
 def quote_random(request):
     """Get one super random active quote with anti-repetition logic"""
     from .serializers import QuoteSerializer
-    from django.core.cache import cache
     import random
     import time
     import hashlib
@@ -4228,7 +4444,7 @@ def quote_random(request):
     
     # Create a cache key for recent quotes (last 10 quotes shown)
     recent_quotes_key = "recent_quotes_cache"
-    recent_quotes = cache.get(recent_quotes_key, [])
+    recent_quotes = safe_cache_get(recent_quotes_key, [])
     
     # Filter out recently shown quotes (last 10)
     available_quotes = [q for q in quotes_list if str(q.id) not in recent_quotes]
@@ -4263,7 +4479,7 @@ def quote_random(request):
         recent_quotes.pop(0)
     
     # Cache for 1 hour (3600 seconds)
-    cache.set(recent_quotes_key, recent_quotes, 3600)
+    safe_cache_set(recent_quotes_key, recent_quotes, timeout=3600)
     
     serializer = QuoteSerializer(selected_quote)
     
@@ -4360,17 +4576,35 @@ def admin_create_university(request):
     }, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['DELETE'])
+@api_view(['PATCH', 'PUT', 'DELETE'])
 @permission_classes([permissions.IsAuthenticated])
 def admin_delete_university(request, university_id):
-    """Delete a university (authenticated users)"""
+    """Update or delete a university (authenticated users)."""
+    from .serializers import UniversitySerializer
     try:
         university = University.objects.get(id=university_id)
     except University.DoesNotExist:
         return Response({'error': 'University not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    university.delete()
-    return Response({'message': 'University deleted successfully'}, status=status.HTTP_200_OK)
+    if request.method == 'DELETE':
+        university.delete()
+        return Response({'message': 'University deleted successfully'}, status=status.HTTP_200_OK)
+
+    serializer = UniversitySerializer(
+        university,
+        data=request.data,
+        partial=request.method == 'PATCH',
+    )
+    if serializer.is_valid():
+        university = serializer.save()
+        return Response({
+            'message': 'University updated successfully',
+            'data': UniversitySerializer(university).data,
+        })
+    return Response({
+        'error': 'Invalid data provided',
+        'errors': serializer.errors,
+    }, status=status.HTTP_400_BAD_REQUEST)
 
 
 # Staff & RBAC endpoints

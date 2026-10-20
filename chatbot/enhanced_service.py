@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 import logging
 
@@ -14,9 +15,9 @@ from api.utils import safe_cache_get, safe_cache_set, safe_cache_delete
 
 from anthropic import Anthropic
 
-# Gemini (Google) is the preferred AI provider for Mr. Caluu. The SDK is only
-# required when a Gemini API key is configured, so the Anthropic fallback keeps
-# working even if google-genai is not installed.
+# Anthropic is the default provider and Gemini the fallback. Each SDK is only
+# required when its key is configured, so the fallback keeps working even if the
+# other one is not installed.
 try:
     from google.genai import Client as GeminiClient
     from google.genai import types as gemini_types
@@ -90,7 +91,10 @@ class EnhancedClaudeService:
         # prevent API rate limits. Free tier: 5 req/min = 12s interval, Paid:
         # 50 req/min = 1.2s interval.
         self._last_request_time = None
-        self._min_request_interval = float(getattr(settings, 'ANTHROPIC_MIN_REQUEST_INTERVAL', 12))
+        self._min_request_interval = float(getattr(settings, 'ANTHROPIC_MIN_REQUEST_INTERVAL', 3))
+        # Real token counts from the most recent provider stream, so cost is
+        # measured instead of guessed from the reply length.
+        self._last_stream_usage = {"input_tokens": 0, "output_tokens": 0}
 
         # Choose the AI provider. Anthropic is now the preferred default;
         # Gemini is used as a fallback if Anthropic is unavailable.
@@ -171,7 +175,7 @@ class EnhancedClaudeService:
                 )
                 return
             except Exception as e:
-                logger.error(f"Failed to initialize Gemini client: {e}. Falling back to Anthropic.")
+                logger.error(f"Failed to initialize Gemini client: {e}.")
 
         # Anthropic path: only reached when Gemini is unavailable or its init failed.
         # Try multiple ways to get the Anthropic API key
@@ -507,6 +511,16 @@ class EnhancedClaudeService:
             )
             lines.append(f"Academic Level: Year {student.year}, Semester {student.semester}")
             
+            # Academic Calendar Context (NEW)
+            calendar_context = self._get_academic_calendar_context(student)
+            if calendar_context:
+                lines.append(f"Academic Calendar: {calendar_context}")
+            
+            # Academic Events Context (NEW)
+            events_context = self._get_academic_events_context(student)
+            if events_context:
+                lines.append(f"Upcoming Events: {events_context}")
+            
             # Program details
             try:
                 program = student.program
@@ -544,16 +558,14 @@ class EnhancedClaudeService:
             except Exception:
                 pass
 
-            # Today's schedule
-            today = timezone.now().strftime("%A").lower()
-            today_classes = TimetableSlot.objects.filter(student=student, day_of_week=today).order_by("time_slot")
-            if today_classes.exists():
-                lines.append("Today's Schedule:")
-                for t in today_classes:
-                    lines.append(f" - {t.course_code or t.course_name or t.course} at {t.time_slot} in {t.venue}" + 
-                               (f" (Instructor: {t.instructor})" if t.instructor else ""))
-            else:
-                lines.append("Today: No classes scheduled")
+            # Today's schedule with smart context (ENHANCED)
+            schedule_context = self._get_smart_schedule_context(student)
+            if schedule_context:
+                lines.append(schedule_context)
+
+        # Hobbies (NEW - for natural conversation)
+        if user.hobbies:
+            lines.append(f"Interests: {', '.join(user.hobbies[:3])}")
 
         unread = Notification.objects.filter(user=user, is_read=False).count()
         if unread:
@@ -1263,6 +1275,7 @@ class EnhancedClaudeService:
 
         # Build student context (Redis-cached)
         student_context = self.build_student_context(user)
+        logger.debug(f"Student context built: {student_context[:200]}...")  # Debug logging
 
         # Personal memories (StudentMemory — Redis-cached)
         personal_memories = self._get_personal_memories(user)
@@ -1286,6 +1299,8 @@ class EnhancedClaudeService:
             pass
 
         from .persona import format_persona_prompt
+        # The persona layers start the prompt with a byte-identical prefix, which
+        # _cacheable_system() marks as cacheable for the Anthropic path.
         system_prompt = format_persona_prompt(
             student_context=student_context,
             personal_memories=personal_memories,
@@ -1551,6 +1566,139 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         # Remove any remaining JSON artifacts
         cleaned = re.sub(r'^[\{\[].*?"reply"\s*:\s*"', '', stripped)
         cleaned = re.sub(r'",?\s*"current_topic".*[\}\]]$', '', cleaned)
+        return cleaned.strip()
+
+    def _get_academic_calendar_context(self, student) -> str:
+        """Get academic calendar context for the student."""
+        try:
+            from academia.models import AcademicCalendar
+            from django.utils import timezone
+            
+            # Get active calendar for student's university
+            calendar = AcademicCalendar.objects.filter(
+                university=student.university,
+                is_active=True
+            ).first()
+            
+            if not calendar:
+                return ""
+            
+            today = timezone.now().date()
+            
+            # Check if today is within calendar dates
+            if calendar.start_date <= today <= calendar.end_date:
+                return f"{calendar.academic_year} ({calendar.semester})"
+            elif today < calendar.start_date:
+                days_until = (calendar.start_date - today).days
+                return f"Semester starts in {days_until} days"
+            else:
+                return f"Semester ended on {calendar.end_date}"
+        except Exception as e:
+            logger.debug(f"Error getting academic calendar context: {e}")
+            return ""
+
+    def _get_academic_events_context(self, student) -> str:
+        """Get upcoming academic events for the student."""
+        try:
+            from academia.models import AcademicEvent
+            from django.utils import timezone
+            
+            # Get active calendar for student's university
+            from academia.models import AcademicCalendar
+            calendar = AcademicCalendar.objects.filter(
+                university=student.university,
+                is_active=True
+            ).first()
+            
+            if not calendar:
+                return ""
+            
+            today = timezone.now().date()
+            
+            # Get upcoming events in next 30 days
+            upcoming = AcademicEvent.objects.filter(
+                calendar=calendar,
+                start_date__gte=today,
+                start_date__lte=today + timezone.timedelta(days=30),
+                is_active=True
+            ).order_by('start_date')[:5]
+            
+            if not upcoming.exists():
+                return ""
+            
+            event_names = []
+            for event in upcoming:
+                # Include all important event types
+                if event.event_type in ['holiday', 'break', 'examination', 'registration', 'orientation', 'academic']:
+                    event_names.append(f"{event.title} ({event.start_date})")
+            
+            if event_names:
+                return ", ".join(event_names)
+        except Exception as e:
+            logger.debug(f"Error getting academic events context: {e}")
+            return ""
+
+    def _get_smart_schedule_context(self, student) -> str:
+        """Get smart schedule context that distinguishes holidays from no configuration."""
+        try:
+            from academia.models import AcademicEvent
+            from django.utils import timezone
+            
+            today = timezone.now().date()
+            today_name = timezone.now().strftime("%A").lower()
+            
+            # Check if today is a holiday
+            from academia.models import AcademicCalendar
+            calendar = AcademicCalendar.objects.filter(
+                university=student.university,
+                is_active=True
+            ).first()
+            
+            is_holiday = False
+            holiday_name = ""
+            
+            if calendar:
+                holiday_events = AcademicEvent.objects.filter(
+                    calendar=calendar,
+                    event_type='holiday',
+                    start_date__lte=today,
+                    end_date__gte=today,
+                    is_active=True
+                )
+                if holiday_events.exists():
+                    is_holiday = True
+                    holiday_name = holiday_events.first().title
+            
+            # Get today's classes
+            today_classes = TimetableSlot.objects.filter(
+                student=student, 
+                day_of_week=today_name
+            ).order_by("time_slot")
+            
+            if is_holiday:
+                # Don't mention "no classes" on holidays
+                return f"Today is {holiday_name} (university holiday)"
+            elif today_classes.exists():
+                lines = ["Today's Schedule:"]
+                for t in today_classes:
+                    lines.append(f" - {t.course_code or t.course_name or t.course} at {t.time_slot} in {t.venue}" + 
+                               (f" (Instructor: {t.instructor})" if t.instructor else ""))
+                return "\n".join(lines)
+            else:
+                # Check if student has any timetable at all
+                has_timetable = TimetableSlot.objects.filter(student=student).exists()
+                if has_timetable:
+                    return "Today: No classes scheduled"
+                else:
+                    # Don't mention schedule if student hasn't configured it
+                    return ""
+        except Exception as e:
+            logger.debug(f"Error getting smart schedule context: {e}")
+            return ""
+
+        # Remove any remaining JSON artifacts
+        cleaned = re.sub(r'^[\{\[].*?"reply"\s*:\s*"', '', stripped)
+        cleaned = re.sub(r'",?\s*"current_topic".*[\}\]]$', '', cleaned)
         cleaned = cleaned.strip()
 
         if not cleaned or len(cleaned) < 3:
@@ -1677,20 +1825,33 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
     def _throttle_request(self, user_id) -> None:
         """Redis-based per-user rate limiting with burst allowance.
 
-        Allows up to _max_burst requests within the interval window.
-        Only blocks (raises) when the burst limit is exceeded.
+        Allows up to ``_max_burst`` requests within the interval window and only
+        blocks once that is exceeded. The increment uses ``cache.incr`` so
+        concurrent requests from the same user cannot all read the same count and
+        slip past the limit (the previous get-then-set was a lost-update race).
         """
         max_burst = 5  # Allow up to 5 rapid messages before throttling
         cache_key = f"throttle:user:{user_id}"
-        count = safe_cache_get(cache_key, 0)
+        window = max(int(self._min_request_interval), 1)
 
-        if count >= max_burst:
+        try:
+            # Atomic: creates the key at 1 on first use, otherwise increments.
+            count = cache.incr(cache_key)
+            if count == 1:
+                cache.set(cache_key, 1, timeout=window)
+        except ValueError:
+            # Key expired between incr and set - re-create and treat as first hit.
+            count = 1
+            cache.set(cache_key, 1, timeout=window)
+        except Exception:
+            # Cache backend unavailable: fail open rather than block the student.
+            logger.warning("Throttle unavailable, allowing request for user %s", user_id)
+            return
+
+        if count > max_burst:
             raise RuntimeError(
                 "You're sending messages too fast. Please wait a moment and try again."
             )
-
-        # Increment counter; TTL sets the sliding window
-        safe_cache_set(cache_key, count + 1, timeout=int(self._min_request_interval))
 
     def get_enhanced_response(self, user_message: str, user, conversation, rag_context: str = "", 
                             navigation_context: str = "", intent_info: dict | None = None) -> EnhancedResponse:
@@ -1736,15 +1897,16 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         resp = None
         last_error = None
 
-        # Token budget: plain text output needs fewer tokens than JSON
+        # Token budget: budgets are for the VISIBLE answer. They were raised from
+        # 250/400/500, which truncated 60-80% of replies on a thinking model.
         if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
-            max_tokens = 500
+            max_tokens = int(getattr(settings, 'CHATBOT_MAX_TOKENS_CRITICAL', 1200))
             thinking_budget = GEMINI_THINKING_BUDGET_CRITICAL
         elif intent_info.get('primary_intent') == 'navigation':
-            max_tokens = 250
+            max_tokens = int(getattr(settings, 'CHATBOT_MAX_TOKENS_SIMPLE', 400))
             thinking_budget = GEMINI_THINKING_BUDGET
         else:
-            max_tokens = 400
+            max_tokens = int(getattr(settings, 'CHATBOT_MAX_TOKENS_DEFAULT', 700))
             thinking_budget = GEMINI_THINKING_BUDGET
 
         for attempt in range(max_retries):
@@ -1981,24 +2143,27 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             user, conversation, user_message, rag_context, personal_info, navigation_context
         )
 
-        # Token budget
+        # Token budget: budgets are for the VISIBLE answer. They were raised from
+        # 250/400/500, which truncated 60-80% of replies on a thinking model.
         if intent_info.get('is_critical') or intent_info.get('primary_intent') == 'procedure':
-            max_tokens = 500
+            max_tokens = int(getattr(settings, 'CHATBOT_MAX_TOKENS_CRITICAL', 1200))
             thinking_budget = GEMINI_THINKING_BUDGET_CRITICAL
         elif intent_info.get('primary_intent') == 'navigation':
-            max_tokens = 250
+            max_tokens = int(getattr(settings, 'CHATBOT_MAX_TOKENS_SIMPLE', 400))
             thinking_budget = GEMINI_THINKING_BUDGET
         else:
-            max_tokens = 400
+            max_tokens = int(getattr(settings, 'CHATBOT_MAX_TOKENS_DEFAULT', 700))
             thinking_budget = GEMINI_THINKING_BUDGET
 
         full_text = ""
+        response_complete = False
         try:
             for chunk in self._call_llm_streaming(system_prompt, formatted_message, max_tokens, 20,
                                                   thinking_budget=thinking_budget,
                                                   use_web_search=bool(intent_info.get('use_web_search'))):
                 full_text += chunk
                 yield {"type": "text", "content": chunk}
+            response_complete = True
         except Exception as e:
             error_msg = str(e).lower()
             logger.error(f"Streaming LLM call failed: {error_msg}")
@@ -2078,8 +2243,15 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             memory_candidates=[{"key": "context", "value": personal_info, "confidence": 0.6}] if personal_info else [],
         )
 
-        self._cache_response(cache_key, response, intent_info.get('primary_intent', 'general'))
-
+        # Never cache a failure. The fallback text is not an answer, and a TTL of
+        # up to 6h would keep serving it after the provider recovered.
+        if response_complete and full_text.strip():
+            self._cache_response(cache_key, response, intent_info.get('primary_intent', 'general'))
+        else:
+            logger.warning(
+                "Skipping response cache for conversation %s — model did not "
+                "complete a reply", conversation.id,
+            )
         yield {
             "type": "meta",
             "tokens_used": total_tokens,
@@ -2192,8 +2364,18 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
         if conversation_message_count <= 2 and len(lowered) <= 15 and re.match(r"^(hi|hello|hey)\b", lowered):
             return "greeting"
         
-        # Schedule queries - always quick response
-        if any(keyword in lowered for keyword in ["schedule today", "today's classes", "classes today", "what's my schedule"]):
+        # Schedule queries - always quick response. The wording list was narrow
+        # enough that natural phrasings ("timetable today", "what classes do I
+        # have today") fell through to a paid LLM call for an answer we already
+        # have in the student's own record.
+        schedule_keywords = [
+            "schedule today", "today's classes", "today's schedule", "classes today",
+            "what's my schedule", "what is my schedule", "timetable today",
+            "today's timetable", "schedule for today", "classes for today",
+            "what classes do i have", "what do i have today", "am i having class",
+            "do i have class today", "do i have classes today",
+        ]
+        if any(keyword in lowered for keyword in schedule_keywords):
             return "schedule_today"
         
         if "next class" in lowered:

@@ -12,7 +12,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Conversation, Message, ChatHistory
-from .serializers import ConversationSerializer, ConversationListSerializer, MessageSerializer, ChatHistorySerializer
+from .serializers import (
+    ConversationSerializer,
+    ConversationListSerializer,
+    MessageSerializer,
+    ChatHistorySerializer,
+    KnowledgeSuggestionSerializer,
+)
 from .enhanced_service import EnhancedClaudeService
 from .vector_service import VectorSearchService
 from .anthropic_service import AnthropicService
@@ -61,6 +67,26 @@ class ChatbotViewSet(viewsets.ModelViewSet):
         if self.action == 'list':
             return queryset
         return queryset.prefetch_related('messages')
+
+    def get_serializer_class(self):
+        # The list endpoint must NOT embed every message of every conversation:
+        # ConversationSerializer nests the full history, so one long thread turned
+        # the list payload into ~100KB and it grows without bound as a student
+        # accumulates messages. Lists get the light serializer; clients fetch
+        # history from /messages/ or the detail endpoint.
+        if self.action == "list":
+            return ConversationListSerializer
+        return ConversationSerializer
+
+    def list(self, request, *args, **kwargs):
+        # Paginate the list so one account with many conversations cannot return
+        # an unbounded response.
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
         title = request.data.get("title") or "New Conversation"
@@ -188,10 +214,12 @@ class ChatbotViewSet(viewsets.ModelViewSet):
         enhanced_service = get_enhanced_service()
         vector_service = get_vector_service()
 
-        quick = None
+        quick = False
         ai_response = None
         assistant_msg = None
         intent_info = None
+        rag_context = ""
+        search_results = None
 
         # Smart response prioritization: quick response saves tokens & cost
         message_count = conversation.messages.count()
@@ -210,8 +238,13 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         cost_tsh=0.0
                     )
                     conversation.save(update_fields=["updated_at"])
+            else:
+                # No quick answer available for this intent: fall through to the
+                # LLM path rather than replying with nothing.
+                quick = False
+                quick_type = None
 
-        else:
+        if not quick_type:
             # ---- LLM path: ALL RAG + LLM work happens OUTSIDE any transaction ----
             logger.info(f"Generating AI response for user {request.user.id}")
 
@@ -219,7 +252,6 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             needs_kb = intent_info.get('needs_knowledge_base', True)
             primary_intent = intent_info.get('primary_intent', 'faq')
 
-            rag_context = ""
             navigation_context = ""
 
             try:
@@ -373,24 +405,27 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.warning(f"Mr Caluu token consumption skipped for user {request.user.id}: {str(e)}")
 
-        # Capture learning suggestions (Phase 5)
-        try:
-            from .models import KnowledgeSuggestion
-            if intent_info is not None:
-                needs_kb = intent_info.get('needs_knowledge_base', True)
-            else:
-                needs_kb = False
-            if needs_kb and not rag_context and ai_response is not None:
-                KnowledgeSuggestion.objects.create(
-                    query_text=sanitized_message,
-                    response_text=ai_response.text,
-                    trigger='no_kb_result',
-                    confidence_score=0.0,
+        # Capture learning suggestions (Phase 5) — shared detector, never fatal.
+        if ai_response is not None:
+            try:
+                from .learning import capture_knowledge_suggestion
+                capture_knowledge_suggestion(
+                    query=sanitized_message,
+                    response=ai_response.text,
                     conversation=conversation,
                     user=request.user,
+                    intent_info=intent_info,
+                    search_results=search_results,
+                    rag_context=rag_context,
+                    source="send_message",
                 )
-        except Exception as e:
-            logger.debug(f"Knowledge suggestion capture skipped: {e}")
+            except Exception as e:
+                logger.error(f"Knowledge suggestion capture failed for user {request.user.id}: {e}")
+        else:
+            logger.info(
+                f"[knowledge-gap] skip: quick response, no answer evaluated "
+                f"(user {request.user.id}, '{sanitized_message[:50]}')"
+            )
 
         # get_queryset() prefetches 'messages', so self.get_object() handed us a
         # conversation whose related cache was filled *before* this request wrote
@@ -401,10 +436,20 @@ class ChatbotViewSet(viewsets.ModelViewSet):
         conversation._prefetched_objects_cache = {}
 
         serializer = ConversationSerializer(conversation)
+        # The conversation payload carries the full message list, but clients need
+        # the new reply and its cost up front (see API_ENDPOINTS_GUIDE.md).
+        # ``messages[-1]`` is the assistant message just saved above.
+        messages = serializer.data.get("messages") or []
+        payload = dict(serializer.data)
+        payload["reply"] = messages[-1]["content"] if messages else ""
+        payload["tokens_used"] = messages[-1].get("tokens_used", 0) if messages else 0
+        payload["cost_tsh"] = messages[-1].get("cost_tsh", 0.0) if messages else 0.0
+        payload["quick_response"] = bool(quick)
+        payload["response_time"] = round(time.time() - start_time, 3)
         total_time = time.time() - start_time
         logger.info(f"Message processing completed for user {request.user.id} in {total_time:.2f}s")
 
-        return Response(serializer.data)
+        return Response(payload)
 
     @action(detail=True, methods=["post"], url_path="send_message_stream")
     def send_message_stream(self, request, pk=None):
@@ -449,6 +494,44 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             full_text = ""
             quick = False
             metadata = {}
+            learning_capture_done = False
+            response_complete = False
+
+            def run_learning_capture(reason):
+                """Record the knowledge gap. Runs once, the moment the model finishes.
+
+                Fires on the ``meta`` event, which the orchestrator emits as soon as
+                the model is done, so the gap is captured even if the browser hangs
+                up before the stream is drained. The post-loop call covers streams
+                that complete without a ``meta`` event.
+                """
+                nonlocal learning_capture_done
+                if learning_capture_done:
+                    return
+                learning_capture_done = True
+                if not full_text.strip():
+                    logger.info(
+                        f"[knowledge-gap] skip: no model answer to evaluate "
+                        f"(trigger={reason}, '{sanitized_message[:50]}')"
+                    )
+                    return
+                try:
+                    from .learning import capture_knowledge_suggestion
+                    capture_knowledge_suggestion(
+                        query=sanitized_message,
+                        response=full_text,
+                        conversation=conversation,
+                        user=request.user,
+                        intent_info=intents,
+                        search_results=search_results,
+                        rag_context=rag_context,
+                        source="send_message_stream",
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Knowledge suggestion capture failed in stream "
+                        f"for user {request.user.id}: {e}"
+                    )
 
             try:
                 enhanced_service = get_enhanced_service()
@@ -462,6 +545,8 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                     if quick_text:
                         quick = True
                         full_text = quick_text
+                        response_complete = True
+                        learning_capture_done = True
                         yield f"data: {json.dumps({'type': 'text', 'content': quick_text})}\n\n"
                         with transaction.atomic():
                             assistant_msg = Message.objects.create(
@@ -472,6 +557,10 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                                 cost_tsh=0.0,
                             )
                             conversation.save(update_fields=["updated_at"])
+                        logger.info(
+                            f"[knowledge-gap] skip: quick response, no answer evaluated "
+                            f"(user {request.user.id}, '{sanitized_message[:50]}')"
+                        )
                         yield f"data: {json.dumps({'type': 'done', 'tokens_used': 0, 'cost_tsh': 0})}\n\n"
                         return
 
@@ -481,6 +570,7 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 intents = enhanced_service.classify_query_intent(sanitized_message)
                 needs_kb = intents.get('needs_knowledge_base', True)
                 primary_intent = intents.get('primary_intent', 'faq')
+                search_results = None
 
                 try:
                     university_id = None
@@ -497,6 +587,8 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                                 search_results,
                                 max_chars=800 if intents.get('is_critical') else 600,
                             )
+                        else:
+                            logger.warning(f"⚠️ NO KNOWLEDGE BASE RESULTS in stream for '{sanitized_message}'")
                     if primary_intent == 'navigation':
                         nav_results = vector_service.search_navigation(sanitized_message, top_k=3)
                         if nav_results:
@@ -542,6 +634,8 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                             'cost_tsh': event['cost_tsh'],
                         }
                         full_text = event['reply']  # canonical cleaned text
+                        response_complete = True
+                        run_learning_capture("model_finished")
 
                 # Add upcoming events alert naturally
                 try:
@@ -685,6 +779,22 @@ class ChatbotViewSet(viewsets.ModelViewSet):
             except Exception as e:
                 logger.error(f"Streaming error for user {request.user.id}: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)[:300]})}\n\n"
+            finally:
+                if not learning_capture_done:
+                    # SSE is pull-based: a client that hangs up after the last text
+                    # chunk never causes the ``meta`` event above to be read, so the
+                    # capture would be lost even though the model did finish. The
+                    # trigger is derived from knowledge-base coverage (exact) rather
+                    # than from the answer text, so a partial ``full_text`` here only
+                    # costs staff a truncated quote, never a wrong trigger.
+                    if not response_complete:
+                        logger.warning(
+                            f"[knowledge-gap] stream closed before the model finished "
+                            f"(user {request.user.id}, {len(full_text)} chars received, "
+                            f"'{sanitized_message[:50]}') — recording gap from a "
+                            f"possibly partial answer"
+                        )
+                    run_learning_capture("stream_closed_early")
 
         response = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
         response['Cache-Control'] = 'no-cache'
@@ -783,19 +893,17 @@ def suggestions_list(request):
     from .models import KnowledgeSuggestion
 
     status_filter = request.query_params.get('status', 'pending')
-    suggestions = KnowledgeSuggestion.objects.filter(status=status_filter)
+    suggestions = KnowledgeSuggestion.objects.filter(status=status_filter).select_related('user', 'reviewed_by')
 
-    data = [{
-        'id': str(s.id),
-        'query_text': s.query_text,
-        'response_text': s.response_text,
-        'trigger': s.trigger,
-        'confidence_score': s.confidence_score,
-        'status': s.status,
-        'created_at': s.created_at.isoformat(),
-    } for s in suggestions[:50]]
+    try:
+        limit = min(max(int(request.query_params.get('limit', 50)), 1), 200)
+    except (TypeError, ValueError):
+        limit = 50
 
-    return Response(data)
+    serializer = KnowledgeSuggestionSerializer(
+        suggestions.order_by('-occurrence_count', '-last_seen_at')[:limit], many=True
+    )
+    return Response(serializer.data)
 
 
 @api_view(["POST"])
@@ -811,6 +919,9 @@ def approve_suggestion(request, pk):
         suggestion = KnowledgeSuggestion.objects.get(id=pk)
     except KnowledgeSuggestion.DoesNotExist:
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if suggestion.status != 'pending':
+        return Response({"detail": "Suggestion has already been reviewed"}, status=status.HTTP_400_BAD_REQUEST)
 
     suggestion.status = 'approved'
     suggestion.reviewed_by = request.user
@@ -856,7 +967,12 @@ def approve_suggestion(request, pk):
     except Exception as e:
         logger.debug(f"Embedding index refresh skipped after approve: {e}")
 
-    return Response({'status': 'approved', 'document_id': str(doc.id)})
+    serializer = KnowledgeSuggestionSerializer(suggestion)
+    return Response({
+        'status': 'approved',
+        'document_id': str(doc.id),
+        'suggestion': serializer.data
+    })
 
 
 @api_view(["POST"])
@@ -873,12 +989,21 @@ def reject_suggestion(request, pk):
     except KnowledgeSuggestion.DoesNotExist:
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    if suggestion.status != 'pending':
+        return Response({"detail": "Suggestion has already been reviewed"}, status=status.HTTP_400_BAD_REQUEST)
+
     suggestion.status = 'rejected'
     suggestion.reviewed_by = request.user
     suggestion.reviewed_at = timezone.now()
     suggestion.save()
 
-    return Response({'status': 'rejected'})
+    logger.info(f"KnowledgeSuggestion {suggestion.id} rejected by {request.user.display_name}")
+
+    serializer = KnowledgeSuggestionSerializer(suggestion)
+    return Response({
+        'status': 'rejected',
+        'suggestion': serializer.data
+    })
 
 
 @api_view(["GET"])
@@ -1189,14 +1314,17 @@ def submit_feedback(request):
 
         # LEARNING PIPELINE (Phase 5): capture negative ratings for staff review
         if int(rating) <= 2:
-            from .models import KnowledgeSuggestion
-            KnowledgeSuggestion.objects.create(
-                query_text=query or (message.conversation.messages.filter(role="user").order_by("-timestamp").first().content if message.conversation.messages.filter(role="user").exists() else ""),
-                response_text=response_text or message.content,
-                trigger='negative_rating',
-                confidence_score=float(rating) / 5.0,
+            from .learning import capture_negative_feedback
+            preceding = (
+                message.conversation.messages.filter(role="user")
+                .order_by("-timestamp").first()
+            )
+            capture_negative_feedback(
+                query=query or (preceding.content if preceding else ""),
+                response=response_text or message.content,
                 conversation=message.conversation,
                 user=request.user,
+                rating=int(rating),
             )
 
         logger.info(f"Feedback submitted: {rating}/5 by user {request.user.id} for message {message_id}")

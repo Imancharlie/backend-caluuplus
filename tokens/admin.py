@@ -4,6 +4,7 @@ from django.utils.html import format_html
 from . import services as token_service
 from .models import (
     ConsumptionRule,
+    PurchaseRequest,
     RedemptionRequest,
     Referral,
     ReferralCode,
@@ -102,6 +103,33 @@ class ReferralAdmin(admin.ModelAdmin):
                     count += 1
         self.message_user(request, f"{count} referral(s) became eligible/rewarded.")
     check_eligibility_now.short_description = "Re-check referral eligibility & reward"
+
+
+@admin.register(PurchaseRequest)
+class PurchaseRequestAdmin(admin.ModelAdmin):
+    list_display = ["user", "package", "payment_reference", "claimed_amount", "status", "created_at"]
+    list_filter = ["status", "provider"]
+    search_fields = ["user__email", "payment_reference", "package__name"]
+    readonly_fields = ["created_at", "updated_at", "reviewed_by", "reviewed_at"]
+    actions = ["approve_selected", "reject_selected"]
+
+    def approve_selected(self, request, queryset):
+        count = 0
+        for purchase_request in queryset:
+            if purchase_request.status == "pending":
+                token_service.approve_purchase_request(purchase_request, request.user, note="Approved via admin")
+                count += 1
+        self.message_user(request, f"{count} purchase(s) approved and credited.")
+    approve_selected.short_description = "Approve selected purchases and credit tokens"
+
+    def reject_selected(self, request, queryset):
+        count = 0
+        for purchase_request in queryset:
+            if purchase_request.status == "pending":
+                token_service.reject_purchase_request(purchase_request, request.user, reason="Rejected via admin")
+                count += 1
+        self.message_user(request, f"{count} purchase(s) rejected.")
+    reject_selected.short_description = "Reject selected purchases"
 
 
 @admin.register(RedemptionRequest)

@@ -338,13 +338,14 @@ class StudentMemoryAdmin(admin.ModelAdmin):
 
 @admin.register(KnowledgeSuggestion)
 class KnowledgeSuggestionAdmin(admin.ModelAdmin):
-    list_display = ['trigger', 'query_text', 'source_level', 'confidence_score', 'status', 'created_at']
+    list_display = ['trigger', 'query_text', 'source_level', 'occurrence_count', 'confidence_score', 'status', 'last_seen_at', 'created_at']
     list_filter = ['status', 'trigger', 'source_level']
     search_fields = ['query_text', 'response_text']
-    readonly_fields = ['id', 'query_hash', 'created_at']
+    readonly_fields = ['id', 'query_hash', 'created_at', 'occurrence_count', 'last_seen_at']
+    ordering = ['-occurrence_count', '-last_seen_at']
     fieldsets = (
         ('The Gap', {
-            'fields': ('trigger', 'query_text', 'response_text', 'confidence_score')
+            'fields': ('trigger', 'query_text', 'response_text', 'confidence_score', 'occurrence_count', 'last_seen_at')
         }),
         ('Source Authority', {
             'fields': ('source_level',),

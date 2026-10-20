@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.conf import settings
 from api.models import University  # assuming this exists
@@ -18,6 +20,7 @@ class Resource(models.Model):
 
 class Opportunity(models.Model):
     CATEGORY_CHOICES = [
+        ('general', 'General'),
         ('seminar', 'Seminar'),
         ('competition', 'Competition'),
         ('job', 'Job'),
@@ -53,3 +56,21 @@ class Opportunity(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class OpportunityReport(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    opportunity = models.ForeignKey(Opportunity, on_delete=models.CASCADE, related_name='reports')
+    reporter = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='opportunity_reports'
+    )
+    reason = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['opportunity', 'reporter'], name='unique_opportunity_report'),
+        ]
+
+    def __str__(self):
+        return f"Report on {self.opportunity_id}"

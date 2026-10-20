@@ -204,6 +204,14 @@ class OpportunitySerializer(serializers.ModelSerializer):
             if field in mutable and mutable.get(field) in self._EMPTY_VALUES:
                 mutable[field] = None
 
+        application_url = mutable.get('application_url')
+        if isinstance(application_url, str):
+            trimmed_url = application_url.strip()
+            if not trimmed_url:
+                mutable['application_url'] = None
+            elif '://' not in trimmed_url and not trimmed_url.lower().startswith('mailto:'):
+                mutable['application_url'] = f'https://{trimmed_url.lstrip("/")}'
+
         category = mutable.get('category')
         if category is not None and category not in self._EMPTY_VALUES and isinstance(category, str):
             category_key = category.strip().lower().replace(' ', '_').replace('-', '_')
@@ -230,14 +238,15 @@ class OpportunitySerializer(serializers.ModelSerializer):
             if value.size > max_size:
                 raise serializers.ValidationError(f"Media file size must be less than {max_size / (1024*1024):.1f}MB.")
 
-            image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+            image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif']
             video_extensions = ['.mp4', '.avi', '.mov']
 
-            file_name = value.name.lower()
+            file_name = (getattr(value, 'name', '') or '').lower()
+            content_type = (getattr(value, 'content_type', '') or '').lower()
             media_type = None
-            if any(file_name.endswith(ext) for ext in image_extensions):
+            if any(file_name.endswith(ext) for ext in image_extensions) or content_type.startswith('image/'):
                 media_type = 'image'
-            elif any(file_name.endswith(ext) for ext in video_extensions):
+            elif any(file_name.endswith(ext) for ext in video_extensions) or content_type.startswith('video/'):
                 media_type = 'video'
 
             if media_type:
@@ -336,15 +345,9 @@ class OpportunitySerializer(serializers.ModelSerializer):
         # First check status - must be approved
         if obj.status != 'approved' or not obj.is_active:
             return False
-        
-        # Then check dates
+
         from django.utils import timezone
         today = timezone.now().date()
-
-        if obj.start_date and obj.start_date > today:
-            return False  # Not yet started
-
         if obj.end_date and obj.end_date < today:
-            return False  # Already ended
-
-        return True  # Currently active
+            return False
+        return True

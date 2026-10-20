@@ -82,6 +82,26 @@ class PeriodStorageTests(TestCase):
         self.assertEqual(sc.period_count(), 0)
         self.assertEqual(sc.get_periods(), {})
 
+    def test_program_change_does_not_leak_courses_across_programs_or_periods(self):
+        other = Program.objects.create(name="BSc Math", college=self.college, duration=4)
+        sc = StudentCourse.objects.create(student=self.student)
+        sc.set_period(1, 1, [{"code": "CS101", "name": "Intro", "credits": 3}])
+        sc.set_period(1, 2, [{"code": "CS102", "name": "Algo", "credits": 3}])
+
+        self.student.program = other
+        self.student.save()
+        self.assertEqual(sc.get_period(1, 1), [])
+        self.assertEqual(sc.get_period(1, 2), [])
+
+        sc.set_period(1, 1, [{"code": "MTH101", "name": "Calc", "credits": 3}])
+        sc.set_period(1, 1, [])
+        self.assertEqual(sc.get_period(1, 1), [])
+
+        self.student.program = self.program
+        self.student.save()
+        self.assertEqual([c["code"] for c in sc.get_period(1, 1)], ["CS101"])
+        self.assertEqual([c["code"] for c in sc.get_period(1, 2)], ["CS102"])
+
     def test_contribution_creates_catalog_course_and_rewards(self):
         sc = StudentCourse.objects.create(student=self.student)
         sc.set_period(1, 1, [{"code": "CSNEW200", "name": "New Course", "credits": 4, "type": "elective"}])

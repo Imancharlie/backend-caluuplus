@@ -103,6 +103,8 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -114,10 +116,13 @@ venv.bak/
 # tracked, so a real key or private key cannot be added by accident.
 .env.*
 !.env.example
+apikey.txt
 firebase_credentials.json
 firebase-credentials.json
 firebase_service_account.json
 *service-account*.json
+service-account*.json
+*.pem
 
 # Spyder project settings
 .spyderproject

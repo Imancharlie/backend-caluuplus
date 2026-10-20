@@ -60,12 +60,14 @@ class ManualPaymentProvider(PaymentProvider):
         }
 
     def verify_payment(self, *, payment_reference, expected_amount, expected_currency):
+        # A typed reference is not proof of payment. Staff approval of a
+        # PurchaseRequest is the manual verification step.
         return {
-            "verified": True,
+            "verified": False,
             "provider_reference": payment_reference,
             "amount": int(expected_amount),
             "currency": expected_currency,
-            "metadata": {"provider": self.name, "manual": True},
+            "metadata": {"provider": self.name, "manual": True, "reason": "awaiting_staff_review"},
         }
 
 

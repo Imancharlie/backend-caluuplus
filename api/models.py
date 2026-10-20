@@ -37,6 +37,11 @@ class User(AbstractUser):
     firebase_uid = models.CharField(max_length=128, blank=True, null=True, unique=True)
     profile_picture = models.URLField(max_length=500, blank=True, null=True)
     hobbies = models.JSONField(default=list, blank=True, help_text="List of hobby IDs")
+    onboarding_state = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Shared web/mobile onboarding progress. Empty means a new account still has steps pending.",
+    )
     
     # NEW FIELDS for enhanced profile
     bio = models.TextField(max_length=500, blank=True, help_text="Short bio/about me")
@@ -217,7 +222,7 @@ class StudentCourse(models.Model):
             ctype = 'elective' if d['is_elective'] else 'core'
         else:
             ctype = 'core'
-        return {
+        out = {
             'id': str(cid),
             'code': code,
             'name': name,
@@ -227,6 +232,10 @@ class StudentCourse(models.Model):
             'year': d.get('year'),
             'added_at': d.get('added_at'),
         }
+        program = d.get('program') or d.get('program_id')
+        if program:
+            out['program'] = str(program)
+        return out
 
     @classmethod
     def period_key(cls, year, semester):
@@ -280,16 +289,59 @@ class StudentCourse(models.Model):
         """Total number of courses across all periods."""
         return sum(len(v) for v in self.get_periods().values())
 
-    def get_period(self, year, semester):
-        """Return the list of course dicts for a given (year, semester), or []."""
-        return self.get_periods().get(self.period_key(year, semester), [])
+    def _current_program_id(self):
+        if not getattr(self, 'student_id', None):
+            return ''
+        return str(getattr(self.student, 'program_id', '') or '')
+
+    def _own_course(self, course, program_id):
+        """A course belongs to this program when it is unstamped or stamped with it."""
+        if not isinstance(course, dict):
+            return False
+        if not program_id or not course.get('program'):
+            return True
+        return str(course.get('program')) == str(program_id)
+
+    def get_period(self, year, semester, program_id=None):
+        """
+        Courses for one (year, semester) that belong to a program.
+        Defaults to the student's current program. Unstamped courses (saved
+        before program stamping) stay visible for the current program.
+        """
+        items = self.get_periods().get(self.period_key(year, semester), [])
+        if program_id is None:
+            program_id = self._current_program_id()
+        if not program_id:
+            return list(items)
+        return [c for c in items if self._own_course(c, program_id)]
+
+    def stamp_program(self, program_id):
+        """Mark courses that have no program yet as belonging to program_id."""
+        pid = str(program_id or '')
+        if not pid:
+            return False
+        periods = self.get_periods()
+        changed = False
+        for items in periods.values():
+            for course in items:
+                if isinstance(course, dict) and not course.get('program'):
+                    course['program'] = pid
+                    changed = True
+        if changed:
+            self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
+            self.save()
+        return changed
 
     def set_period(self, year, semester, courses, save=True):
         """
-        Replace ONLY the given (year, semester) period's courses, preserving
-        every other period untouched. `courses` may be a list of raw dicts.
-        Returns the list of normalized course dicts that were stored.
+        Replace this program's courses for one (year, semester).
+
+        Other periods are left untouched. Courses stamped with a different
+        program in the same period are kept, so switching program and saving
+        the new one does not erase the previous program's list.
+        An empty list clears this program's courses for that period.
         """
+        program_id = self._current_program_id()
         cleaned = []
         for d in courses or []:
             cd = self._course_dict(d)
@@ -297,9 +349,24 @@ class StudentCourse(models.Model):
                 continue
             cd['year'] = int(year)
             cd['semester'] = int(semester)
+            if program_id:
+                cd['program'] = program_id
             cleaned.append(cd)
         periods = self.get_periods()
-        periods[self.period_key(year, semester)] = cleaned
+        key = self.period_key(year, semester)
+        existing = periods.get(key, [])
+        if program_id:
+            kept = [
+                c for c in existing
+                if isinstance(c, dict) and c.get('program') and str(c.get('program')) != program_id
+            ]
+        else:
+            kept = []
+        merged = kept + cleaned
+        if merged:
+            periods[key] = merged
+        else:
+            periods.pop(key, None)
         self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
         if save:
             self.save()
@@ -315,6 +382,9 @@ class StudentCourse(models.Model):
             return (None, False)
         cd['year'] = int(year)
         cd['semester'] = int(semester)
+        program_id = self._current_program_id()
+        if program_id:
+            cd['program'] = program_id
         key = self.period_key(year, semester)
         periods = self.get_periods()
         items = periods.setdefault(key, [])
@@ -338,6 +408,9 @@ class StudentCourse(models.Model):
             return (None, False)
         cd['year'] = int(year)
         cd['semester'] = int(semester)
+        program_id = self._current_program_id()
+        if program_id:
+            cd['program'] = program_id
         key = self.period_key(year, semester)
         periods = self.get_periods()
         items = periods.get(key, [])
@@ -373,12 +446,29 @@ class StudentCourse(models.Model):
         return True
 
     def remove_period(self, year, semester, save=True):
-        """Remove an entire period (all its courses). Returns True if it existed."""
+        """
+        Remove this program's courses for one period.
+        Courses stamped with another program in the same period stay.
+        """
         key = self.period_key(year, semester)
         periods = self.get_periods()
-        if key not in periods:
+        items = periods.get(key)
+        if not items:
             return False
-        del periods[key]
+        program_id = self._current_program_id()
+        if program_id:
+            kept = [
+                c for c in items
+                if isinstance(c, dict) and c.get('program') and str(c.get('program')) != program_id
+            ]
+            if len(kept) == len(items):
+                return False
+            if kept:
+                periods[key] = kept
+            else:
+                periods.pop(key, None)
+        else:
+            periods.pop(key, None)
         self.courses = {'_v': self.PERIODS_VERSION, 'periods': periods}
         if save:
             self.save()
@@ -498,8 +588,19 @@ class TimetableSlot(models.Model):
     academic_year = models.CharField(max_length=10, default='2024')
     class_type = models.CharField(max_length=20, choices=CLASS_TYPE_CHOICES, default='lecture')
     venue = models.CharField(max_length=100, blank=True, null=True)
+    venue_place = models.ForeignKey(
+        'caluu_map.Venue', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='timetable_slots',
+        help_text='Verified Caluu Map venue. Leave empty when the room is not matched.',
+    )
     instructor = models.CharField(max_length=100, blank=True, null=True)  # Renamed from instructor_name
     description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=[
+        ('scheduled', 'Scheduled'),
+        ('postponed', 'Postponed'),
+        ('cancelled', 'Cancelled'),
+    ], default='scheduled')
+    status_note = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -514,6 +615,88 @@ class TimetableSlot(models.Model):
         return f"{self.course_code or self.course_name or 'Course'} - {self.day_of_week} {self.time_slot}"
 
 
+class ClassRepresentative(models.Model):
+    """A student authorized to announce changes for one programme."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='class_rep_roles')
+    program = models.ForeignKey(Program, on_delete=models.CASCADE, related_name='class_representatives')
+    cohort_year = models.IntegerField(
+        default=0,
+        help_text='Limit the role to this year of study. 0 means the whole programme.',
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'program', 'cohort_year'],
+                name='uniq_class_rep_scope',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user.display_name} · {self.program.name}"
+
+
+class SessionChange(models.Model):
+    """Audit row for a class-representative session announcement."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    program = models.ForeignKey(Program, on_delete=models.CASCADE, related_name='session_changes')
+    course_code = models.CharField(max_length=20)
+    day_of_week = models.CharField(max_length=10)
+    time_slot = models.CharField(max_length=20)
+    semester = models.IntegerField()
+    academic_year = models.CharField(max_length=10)
+    change_type = models.CharField(max_length=20, choices=[
+        ('postponed', 'Postponed'),
+        ('cancelled', 'Cancelled'),
+        ('rescheduled', 'Rescheduled'),
+    ])
+    message = models.TextField()
+    affected_count = models.PositiveIntegerField(default=0)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='session_changes')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['program', 'course_code', 'day_of_week', 'time_slot'])]
+
+    def __str__(self):
+        return f"{self.course_code} {self.day_of_week} {self.change_type}"
+
+
+class SessionReminderPreference(models.Model):
+    """In-app reminder settings. SMS consent is stored but not sent until a provider exists."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='session_reminder_preference')
+    enabled = models.BooleanField(default=False)
+    minutes_before = models.PositiveIntegerField(default=30)
+    sms_consent = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.email} reminders ({'on' if self.enabled else 'off'})"
+
+
+class SessionReminderLog(models.Model):
+    """Prevents a second reminder for the same session on the same day."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='session_reminder_logs')
+    slot = models.ForeignKey(TimetableSlot, on_delete=models.CASCADE, related_name='reminder_logs')
+    remind_on = models.DateField()
+    minutes_before = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'slot', 'remind_on', 'minutes_before'],
+                name='uniq_session_reminder_delivery',
+            ),
+        ]
+
+
 class Article(models.Model):
     """Articles for the knowledge base"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -526,6 +709,7 @@ class Article(models.Model):
         ('campus_life', 'Campus Life'),
         ('news', 'News'),
         ('events', 'Events'),
+        ('revelational', 'Revelational'),
         ('general', 'General'),
     ], default='general')
     tags = models.JSONField(default=list, blank=True, help_text="List of tags")
@@ -895,6 +1079,146 @@ class GPACalculation(models.Model):
     def __str__(self):
         gpa_type = "Target" if self.is_target else "Actual"
         return f"{self.user.display_name} - {gpa_type} GPA event (encrypted) (Sem {self.semester}, Year {self.academic_year})"
+
+
+class CommunityStory(models.Model):
+    """Student story: a question, a learned card, a campus photo, or a competition."""
+
+    KIND_QUESTION = 'question'
+    KIND_PHOTO = 'photo'
+    KIND_LEARNED = 'learned'
+    KIND_COMPETITION = 'competition'
+    KIND_CHOICES = [
+        (KIND_QUESTION, 'Question'),
+        (KIND_PHOTO, 'Campus photo'),
+        (KIND_LEARNED, 'What I learned'),
+        (KIND_COMPETITION, 'Competition'),
+    ]
+
+    STATUS_ACTIVE = 'active'
+    STATUS_ARCHIVED = 'archived'
+    STATUS_REMOVED = 'removed'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_ARCHIVED, 'Archived'),
+        (STATUS_REMOVED, 'Removed'),
+    ]
+
+    FORMAT_OPEN = 'open'
+    FORMAT_QUIZ = 'quiz'
+    FORMAT_SCHEDULED = 'scheduled_reveal'
+    FORMAT_DEADLINE = 'deadline'
+    FORMAT_CHOICES = [
+        (FORMAT_OPEN, 'Open question'),
+        (FORMAT_QUIZ, 'Quiz'),
+        (FORMAT_SCHEDULED, 'Scheduled reveal'),
+        (FORMAT_DEADLINE, 'Deadline competition'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    share_code = models.SlugField(max_length=32, unique=True, db_index=True)
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    creator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='community_stories')
+    university = models.ForeignKey(
+        University, on_delete=models.SET_NULL, null=True, blank=True, related_name='community_stories'
+    )
+    campus_name = models.CharField(max_length=120, blank=True, default='')
+    card_color = models.CharField(max_length=20, blank=True, default='navy')
+    title = models.CharField(max_length=400)
+    body = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to='community/', blank=True, null=True)
+    published_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField(blank=True, null=True)
+    purge_at = models.DateTimeField(blank=True, null=True)
+    comments_hidden = models.BooleanField(default=False)
+    appreciation_count = models.PositiveIntegerField(default=0)
+    response_count = models.PositiveIntegerField(default=0)
+    competition_format = models.CharField(max_length=32, choices=FORMAT_CHOICES, blank=True, default='')
+    starts_at = models.DateTimeField(blank=True, null=True)
+    ends_at = models.DateTimeField(blank=True, null=True)
+    reveal_at = models.DateTimeField(blank=True, null=True)
+    correct_answer = models.TextField(blank=True, default='')
+    explanation = models.TextField(blank=True, default='')
+    allow_multiple = models.BooleanField(default=False)
+    deadline_notified = models.BooleanField(default=False)
+    results_notified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-published_at']
+        indexes = [
+            models.Index(fields=['status', 'kind', '-published_at']),
+            models.Index(fields=['expires_at']),
+            models.Index(fields=['purge_at']),
+            models.Index(fields=['kind', 'ends_at']),
+            models.Index(fields=['kind', 'reveal_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.kind}: {self.title}"
+
+
+class CommunityResponse(models.Model):
+    """Threaded discussion reply or a competition submission."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    story = models.ForeignKey(CommunityStory, on_delete=models.CASCADE, related_name='responses')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='community_responses')
+    parent = models.ForeignKey(
+        'self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies'
+    )
+    body = models.TextField(max_length=2000)
+    is_submission = models.BooleanField(default=False)
+    score = models.PositiveSmallIntegerField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['story', 'created_at']),
+            models.Index(fields=['story', 'user', 'is_submission']),
+            models.Index(fields=['parent']),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} on {self.story_id}"
+
+
+class CommunityAppreciation(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    story = models.ForeignKey(CommunityStory, on_delete=models.CASCADE, related_name='appreciations')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='community_appreciations')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['story', 'user'], name='unique_story_appreciation'),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} appreciated {self.story_id}"
+
+
+class CommunityReport(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    story = models.ForeignKey(CommunityStory, on_delete=models.CASCADE, related_name='reports')
+    reporter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='community_reports')
+    reason = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['story', 'reporter'], name='unique_story_report'),
+        ]
+        indexes = [
+            models.Index(fields=['story', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"Report on {self.story_id}"
 
 
 class LoginActivity(models.Model):

@@ -240,6 +240,21 @@ USD_TO_TSH_RATE = float(os.getenv("USD_TO_TSH_RATE", "2700"))
 # Note: Per-user throttling allows multiple users simultaneously
 ANTHROPIC_MIN_REQUEST_INTERVAL = float(os.getenv("ANTHROPIC_MIN_REQUEST_INTERVAL", "3"))
 
+# --- Knowledge-gap learning pipeline (chatbot/learning.py) -------------------
+# When a turn reveals that the knowledge base / system data could not answer an
+# official question, Mr Caluu stores a KnowledgeSuggestion row for staff review.
+# CHATBOT_LEARNING_VERBOSE logs every keep/skip decision at INFO so the pipeline
+# is observable instead of failing silently.
+CHATBOT_LEARNING_VERBOSE = os.getenv("CHATBOT_LEARNING_VERBOSE", "true").lower() in ("1", "true", "yes")
+# Relevance grading for RAG hits. vector_service.search() falls back to its
+# best-scoring documents even when they are all irrelevant, so coverage is
+# graded on score, not on emptiness.
+#   score >= CHATBOT_KB_HIT_MIN_RELEVANCE  -> 'hit'  (KB answered it)
+#   score >= CHATBOT_KB_WEAK_MIN_RELEVANCE -> 'weak' (partial, flag for review)
+#   below that                              -> 'miss' (flag as no_kb_result)
+CHATBOT_KB_HIT_MIN_RELEVANCE = float(os.getenv("CHATBOT_KB_HIT_MIN_RELEVANCE", "0.20"))
+CHATBOT_KB_WEAK_MIN_RELEVANCE = float(os.getenv("CHATBOT_KB_WEAK_MIN_RELEVANCE", "0.08"))
+
 # Canonical frontend routes for link tags used by Mr. Caluu
 CHATBOT_LINKS = {
     "dashboard": "/dashboard",
@@ -396,12 +411,16 @@ LOGGING = {
     },
     'root': {
         'handlers': ['console'],
-        'level': 'DEBUG',  # Changed to DEBUG to see all logs
+        # INFO, not DEBUG: the SDKs (anthropic/httpx) log the ENTIRE request body
+        # at DEBUG, which for the chatbot means the full system prompt plus the
+        # student's name, email, programme and courses written to disk on every
+        # message -- a large I/O cost and a privacy leak.
+        'level': 'INFO',
     },
     'loggers': {
         'api': {
             'handlers': ['console'],
-            'level': 'DEBUG',  # Show all API logs including DEBUG, INFO, WARNING, ERROR
+            'level': 'INFO',  # Show API logs, but not DEBUG
             'propagate': False,
         },
         'chatbot': {
@@ -409,6 +428,11 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+        # These log full HTTP payloads (system prompt + student PII) at DEBUG.
+        'anthropic': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'httpx': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'httpcore': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
+        'google': {'handlers': ['console'], 'level': 'WARNING', 'propagate': False},
         'django': {
             'handlers': ['console'],
             'level': 'INFO',

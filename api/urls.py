@@ -1,6 +1,9 @@
 from django.urls import path
 from . import views
 from . import admin_views
+from . import timetable_ops
+from . import community
+from . import onboarding
 
 urlpatterns = [
     # ==========================================================================
@@ -113,7 +116,11 @@ urlpatterns = [
     # User endpoints
     path('user/basic-details/', views.user_basic_details, name='user-basic-details'),
     path('user/update/', views.user_update, name='user-update'),
+    path('user/profile-picture/', onboarding.profile_picture, name='user-profile-picture'),
     path('user/hobbies/', views.user_hobbies, name='user-hobbies'),
+    path('public/user-count/', onboarding.public_user_count, name='public-user-count'),
+    path('onboarding/', onboarding.onboarding_progress, name='onboarding-progress'),
+    path('onboarding/social-proof/', onboarding.social_proof, name='onboarding-social-proof'),
     
     # User search for notifications
     path('users/search/', views.user_search, name='user-search'),
@@ -131,6 +138,10 @@ urlpatterns = [
     
     # Timetable endpoints
     path('timetable/my/', views.timetable_my, name='timetable-my'),
+    path('timetable/export/', timetable_ops.timetable_export, name='timetable-export'),
+    path('timetable/reminders/', timetable_ops.reminder_preference, name='timetable-reminders'),
+    path('timetable/cr/sessions/', timetable_ops.cr_sessions, name='timetable-cr-sessions'),
+    path('timetable/announcements/', timetable_ops.session_announcement, name='timetable-announcements'),
     path('timetable-slots/', views.timetable_slots, name='timetable-slots'),
     path('timetable-slots/<uuid:slot_id>/', views.timetable_slot_detail, name='timetable-slot-detail'),
     path('timetable-slots/bulk-create/', views.timetable_bulk_create, name='timetable-bulk-create'),
@@ -158,6 +169,13 @@ urlpatterns = [
     # Media upload endpoint
     path('media/articles/upload/', views.article_image_upload, name='article-image-upload'),
     
+    # Stories & Community
+    path('community/stories/', community.story_list, name='community-stories'),
+    path('community/stories/<slug:share_code>/', community.story_detail, name='community-story-detail'),
+    path('community/stories/<slug:share_code>/responses/', community.story_responses, name='community-story-responses'),
+    path('community/stories/<slug:share_code>/appreciate/', community.story_appreciate, name='community-story-appreciate'),
+    path('community/stories/<slug:share_code>/report/', community.story_report, name='community-story-report'),
+
     # Slide endpoints
     path('slides/', views.slide_list, name='slide-list'),
     path('slides/<uuid:slide_id>/', views.slide_detail, name='slide-detail'),

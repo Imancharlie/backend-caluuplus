@@ -4,7 +4,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APITestCase
 from rest_framework import status
 from django.urls import reverse
-from .models import Resource, Opportunity
+from .models import OpportunityReport, Resource, Opportunity
 from api.models import University, College, Program
 
 User = get_user_model()
@@ -378,7 +378,7 @@ class OpportunityAPITestCase(APITestCase):
         response = self.client.get('/api/resources_opps/opportunities/categories/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 7)  # All categories from model
+        self.assertEqual(len(response.data), len(Opportunity.CATEGORY_CHOICES))
 
         # Check that it returns the expected format
         category = response.data[0]
@@ -468,9 +468,9 @@ class OpportunityAPITestCase(APITestCase):
             format='json'
         )
 
-        # Should not be active yet (starts tomorrow)
+        # A future start stays visible. Only an ended event is inactive.
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['is_active'], False)
+        self.assertEqual(response.data['is_active'], True)
 
         # Create opportunity that is currently active
         active_data = {
@@ -485,20 +485,18 @@ class OpportunityAPITestCase(APITestCase):
             format='json'
         )
 
-        # Newly created opportunities are pending moderation, so not active yet,
-        # even if their dates fall in the present.
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['is_active'], False)
+        self.assertEqual(response.data['is_active'], True)
+        self.assertEqual(response.data['status'], 'approved')
 
-        # Simulate admin approval: once approved with active dating, is_active is True.
-        opp = OppModel.objects.get(id=response.data['id'])
-        opp.status = 'approved'
-        opp.is_active = True
-        opp.save()
-
-        detail = self.client.get(f"/api/resources_opps/opportunities/{opp.id}/")
-        self.assertEqual(detail.status_code, status.HTTP_200_OK)
-        self.assertEqual(detail.data['is_active'], True)
+        ended_data = {
+            **self.opportunity_data,
+            'start_date': (date.today() - timedelta(days=10)).isoformat(),
+            'end_date': (date.today() - timedelta(days=1)).isoformat(),
+        }
+        ended = self.client.post('/api/resources_opps/opportunities/', ended_data, format='json')
+        self.assertEqual(ended.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(ended.data['is_active'], False)
 
     def test_search_opportunities(self):
         """Test searching opportunities."""
@@ -574,6 +572,67 @@ class OpportunityAPITestCase(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['category'], 'online_course')
+
+    def test_create_accepts_link_without_scheme_and_phone_photo(self):
+        """Bare links and HEIC photos are common from the share form."""
+        self.client.force_authenticate(user=self.user)
+        photo = SimpleUploadedFile('campus.heic', b'fake-heic', content_type='image/heic')
+
+        response = self.client.post(
+            '/api/resources_opps/opportunities/',
+            {
+                **self.opportunity_data,
+                'title': 'Poster share',
+                'application_url': 'instagram.com/caluu',
+                'cover_media': photo,
+            },
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.content)
+        self.assertEqual(response.data['application_url'], 'https://instagram.com/caluu')
+        self.assertEqual(response.data['media_type'], 'image')
+
+    def test_report_opportunity(self):
+        """Another student can report a live post once, with a reason."""
+        self.client.force_authenticate(user=self.user)
+        created = self.client.post('/api/resources_opps/opportunities/', self.opportunity_data, format='json')
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED, created.content)
+        opportunity_id = created.data['id']
+
+        reporter = User.objects.create_user(
+            email='reporter@example.com',
+            password='testpass123',
+            display_name='Reporter',
+        )
+        self.client.force_authenticate(user=reporter)
+
+        missing_reason = self.client.post(f'/api/resources_opps/opportunities/{opportunity_id}/report/', {'reason': 'no'}, format='json')
+        self.assertEqual(missing_reason.status_code, status.HTTP_400_BAD_REQUEST)
+
+        reported = self.client.post(
+            f'/api/resources_opps/opportunities/{opportunity_id}/report/',
+            {'reason': 'This looks like spam.'},
+            format='json',
+        )
+        self.assertEqual(reported.status_code, status.HTTP_201_CREATED, reported.content)
+        self.assertTrue(reported.data['reported'])
+        self.assertEqual(OpportunityReport.objects.filter(opportunity_id=opportunity_id, reporter=reporter).count(), 1)
+
+        again = self.client.post(
+            f'/api/resources_opps/opportunities/{opportunity_id}/report/',
+            {'reason': 'Still spam.'},
+            format='json',
+        )
+        self.assertEqual(again.status_code, status.HTTP_409_CONFLICT)
+
+        self.client.force_authenticate(user=self.user)
+        own = self.client.post(
+            f'/api/resources_opps/opportunities/{opportunity_id}/report/',
+            {'reason': 'My own post.'},
+            format='json',
+        )
+        self.assertEqual(own.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_create_without_university_uses_student_profile(self):
         """Auto-fill university from the authenticated student's profile."""

@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleLike, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, UniversityLink, GPACalculation,StudentTerm, StudentCourseEnrollment
+from .models import User, University, College, Program, Course, Student, StudentCourse, TimetableSlot, Article, ArticleLike, Notification, Slide, HelpMessage, Quote, UniversityAmbassador, UniversityLink, GPACalculation,StudentTerm, StudentCourseEnrollment, ClassRepresentative, SessionChange, SessionReminderPreference, CommunityStory, CommunityResponse, CommunityReport
 
 
 @admin.register(User)
@@ -34,8 +34,8 @@ class CustomUserAdmin(UserAdmin):
 
 @admin.register(University)
 class UniversityAdmin(admin.ModelAdmin):
-    list_display = ('name', 'country', 'created_at')
-    list_filter = ('country', 'created_at')
+    list_display = ('name', 'country', 'grade_scheme', 'created_at')
+    list_filter = ('country', 'grade_scheme', 'created_at')
     search_fields = ('name', 'country')
 
 
@@ -91,7 +91,7 @@ class TimetableSlotAdmin(admin.ModelAdmin):
             'fields': ('course', 'course_code', 'course_name')
         }),
         ('Schedule', {
-            'fields': ('day_of_week', 'time_slot', 'class_type', 'venue', 'instructor', 'description')
+            'fields': ('day_of_week', 'time_slot', 'class_type', 'venue', 'venue_place', 'status', 'status_note', 'instructor', 'description')
         }),
         ('Academic Info', {
             'fields': ('student', 'semester', 'academic_year')
@@ -353,3 +353,54 @@ class StudentCourseEnrollmentAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('term__student__user', 'course')
+
+
+@admin.register(ClassRepresentative)
+class ClassRepresentativeAdmin(admin.ModelAdmin):
+    list_display = ('user', 'program', 'cohort_year', 'is_active', 'created_at')
+    list_filter = ('is_active', 'program')
+    search_fields = ('user__email', 'user__display_name', 'program__name')
+
+
+@admin.register(SessionChange)
+class SessionChangeAdmin(admin.ModelAdmin):
+    list_display = ('course_code', 'program', 'change_type', 'affected_count', 'created_by', 'created_at')
+    list_filter = ('change_type', 'day_of_week')
+    search_fields = ('course_code', 'message', 'created_by__email')
+    readonly_fields = ('created_at', 'affected_count')
+
+
+@admin.register(SessionReminderPreference)
+class SessionReminderPreferenceAdmin(admin.ModelAdmin):
+    list_display = ('user', 'enabled', 'minutes_before', 'sms_consent', 'updated_at')
+    list_filter = ('enabled', 'sms_consent')
+
+
+@admin.register(CommunityStory)
+class CommunityStoryAdmin(admin.ModelAdmin):
+    list_display = ('title', 'kind', 'status', 'creator', 'published_at', 'expires_at', 'purge_at', 'comments_hidden', 'response_count')
+    list_filter = ('kind', 'status', 'competition_format')
+    search_fields = ('title', 'body', 'share_code', 'creator__email', 'creator__display_name')
+    readonly_fields = ('share_code', 'published_at', 'created_at', 'updated_at', 'appreciation_count', 'response_count')
+    actions = ('archive_stories', 'remove_stories')
+
+    @admin.action(description='Archive selected stories')
+    def archive_stories(self, request, queryset):
+        queryset.update(status=CommunityStory.STATUS_ARCHIVED)
+
+    @admin.action(description='Remove selected stories from the community')
+    def remove_stories(self, request, queryset):
+        queryset.update(status=CommunityStory.STATUS_REMOVED)
+
+
+@admin.register(CommunityResponse)
+class CommunityResponseAdmin(admin.ModelAdmin):
+    list_display = ('story', 'user', 'is_submission', 'score', 'created_at')
+    list_filter = ('is_submission',)
+    search_fields = ('body', 'user__email', 'story__title')
+
+
+@admin.register(CommunityReport)
+class CommunityReportAdmin(admin.ModelAdmin):
+    list_display = ('story', 'reporter', 'reason', 'created_at')
+    search_fields = ('reason', 'story__title', 'reporter__email')

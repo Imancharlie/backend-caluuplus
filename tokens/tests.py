@@ -278,7 +278,18 @@ class TokenAPITest(TestCase):
         resp = self.client.post("/api/tokens/consume/", {}, format="json")
         self.assertEqual(resp.status_code, 400)
 
-    def test_purchase_endpoint_verifies_payment(self):
+    def test_packages_list_returns_active_only(self):
+        inactive = TokenPackage.objects.create(
+            name="Hidden", token_amount=10, price_amount=100, currency="TSH", is_active=False
+        )
+        resp = self.client.get("/api/tokens/packages/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("packages", resp.data)
+        ids = {str(p["id"]) for p in resp.data["packages"]}
+        self.assertNotIn(str(inactive.id), ids)
+        self.assertTrue(any(p["name"] == "Starter" for p in resp.data["packages"]))
+
+    def test_purchase_endpoint_is_pending_until_staff_approval(self):
         pkg = TokenPackage.objects.first()
         resp = self.client.post(
             "/api/tokens/purchase/",
@@ -286,15 +297,43 @@ class TokenAPITest(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 201)
-        self.assertEqual(resp.data["purchased_balance"], 100)
-        self.assertEqual(resp.data["kind"], "purchased")
-        # Buying the same package with the same payment ref is idempotent -> 409
+        self.assertEqual(resp.data["status"], "pending")
+        self.assertEqual(token_service.get_wallet(self.user).purchased_balance, 0)
+        # Same reference must not create a second request or credit tokens.
         resp2 = self.client.post(
             "/api/tokens/purchase/",
             {"package_id": str(pkg.id), "payment_reference": "PAY-REF-1", "provider": "manual"},
             format="json",
         )
         self.assertEqual(resp2.status_code, 409)
+        self.assertEqual(token_service.get_wallet(self.user).purchased_balance, 0)
+
+        denied = self.client.post(
+            f"/api/tokens/admin/purchases/{resp.data['id']}/approve/",
+            {},
+            format="json",
+        )
+        self.assertEqual(denied.status_code, 403)
+
+        staff = make_user("staff-purchase@test.com")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        approved = self.client.post(
+            f"/api/tokens/admin/purchases/{resp.data['id']}/approve/",
+            {},
+            format="json",
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertEqual(approved.data["status"], "approved")
+        self.assertEqual(token_service.get_wallet(self.user).purchased_balance, 100)
+        again = self.client.post(
+            f"/api/tokens/admin/purchases/{resp.data['id']}/approve/",
+            {},
+            format="json",
+        )
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(token_service.get_wallet(self.user).purchased_balance, 100)
 
     def test_history_and_rewards_endpoints(self):
         token_service.reward(self.user, "PROFILE_COMPLETION", reference_key="h1")

@@ -409,6 +409,49 @@ def purchase(user, package_id=None, reference_key=None, amount=None, initiated_b
         return _result(wallet, txn, extra={"package": package.name if package else None})
 
 
+def approve_purchase_request(purchase_request, actor, note=""):
+    """Staff confirmation. Credits purchased tokens once for this reference."""
+    if actor is None or not (getattr(actor, "is_staff", False) or getattr(actor, "is_superuser", False)):
+        raise TokenError("Only staff can approve a purchase", code="forbidden", status_code=403)
+    if purchase_request.status == "approved":
+        raise DuplicateOperation("This purchase has already been approved")
+    if purchase_request.status != "pending":
+        raise TokenError("Only pending purchases can be approved", code="invalid_state", status_code=400)
+
+    reference_key = f"purchase:{purchase_request.package_id}:{purchase_request.payment_reference}"
+    result = purchase(
+        user=purchase_request.user,
+        package_id=purchase_request.package_id,
+        reference_key=reference_key,
+        initiated_by="payment",
+        actor=actor,
+        metadata={
+            "payment_reference": purchase_request.payment_reference,
+            "provider": purchase_request.provider,
+            "purchase_request_id": str(purchase_request.id),
+        },
+    )
+    purchase_request.status = "approved"
+    purchase_request.review_reason = note or purchase_request.review_reason
+    purchase_request.reviewed_by = actor
+    purchase_request.reviewed_at = timezone.now()
+    purchase_request.save(update_fields=["status", "review_reason", "reviewed_by", "reviewed_at", "updated_at"])
+    return result
+
+
+def reject_purchase_request(purchase_request, actor, reason=""):
+    if actor is None or not (getattr(actor, "is_staff", False) or getattr(actor, "is_superuser", False)):
+        raise TokenError("Only staff can reject a purchase", code="forbidden", status_code=403)
+    if purchase_request.status != "pending":
+        raise TokenError("Only pending purchases can be rejected", code="invalid_state", status_code=400)
+    purchase_request.status = "rejected"
+    purchase_request.review_reason = reason
+    purchase_request.reviewed_by = actor
+    purchase_request.reviewed_at = timezone.now()
+    purchase_request.save(update_fields=["status", "review_reason", "reviewed_by", "reviewed_at", "updated_at"])
+    return purchase_request
+
+
 # ---------------------------------------------------------------------------
 # REDEMPTION
 # ---------------------------------------------------------------------------
