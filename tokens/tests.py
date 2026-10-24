@@ -379,6 +379,52 @@ class TokenAPITest(TestCase):
         self.assertEqual(again.status_code, 409)
         self.assertEqual(token_service.get_wallet(self.user).purchased_balance, 100)
 
+    def test_admin_purchase_list_puts_pending_first(self):
+        pkg = TokenPackage.objects.first()
+        denied = self.client.get("/api/tokens/admin/purchases/")
+        self.assertEqual(denied.status_code, 403)
+
+        older = self.client.post(
+            "/api/tokens/purchase/",
+            {"package_id": str(pkg.id), "payment_reference": "LIST-OLDER", "claimed_amount": "5000"},
+            format="json",
+        )
+        self.assertEqual(older.status_code, 201)
+
+        staff = make_user("staff-list@test.com")
+        staff.is_staff = True
+        staff.save()
+        self.client.force_authenticate(user=staff)
+        approved = self.client.post(f"/api/tokens/admin/purchases/{older.data['id']}/approve/", {}, format="json")
+        self.assertEqual(approved.status_code, 200)
+
+        self.client.force_authenticate(user=self.user)
+        pending = self.client.post(
+            "/api/tokens/purchase/",
+            {"package_id": str(pkg.id), "payment_reference": "LIST-PENDING"},
+            format="json",
+        )
+        self.assertEqual(pending.status_code, 201)
+
+        self.client.force_authenticate(user=staff)
+        listed = self.client.get("/api/tokens/admin/purchases/")
+        self.assertEqual(listed.status_code, 200)
+        statuses = [item["status"] for item in listed.data["results"]]
+        self.assertEqual(statuses[0], "pending")
+        self.assertIn("approved", statuses)
+        row = listed.data["results"][0]
+        self.assertEqual(row["user_email"], self.user.email)
+        self.assertEqual(row["user_name"], self.user.display_name)
+        self.assertEqual(row["package_name"], pkg.name)
+        self.assertEqual(int(row["token_amount"]), int(pkg.token_amount))
+        self.assertEqual(row["payment_reference"], "LIST-PENDING")
+        self.assertIn("price_amount", row)
+        self.assertEqual(row["currency"], "TSH")
+
+        only_pending = self.client.get("/api/tokens/admin/purchases/", {"status": "pending"})
+        self.assertEqual(only_pending.status_code, 200)
+        self.assertEqual([item["status"] for item in only_pending.data["results"]], ["pending"])
+
     def test_history_and_rewards_endpoints(self):
         token_service.reward(self.user, "PROFILE_COMPLETION", reference_key="h1")
         hist = self.client.get("/api/tokens/history/")

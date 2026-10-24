@@ -61,6 +61,44 @@ class TokenTransactionSerializer(serializers.ModelSerializer):
         ]
 
 
+class AdminPurchaseRequestSerializer(serializers.ModelSerializer):
+    user_id = serializers.UUIDField(read_only=True)
+    user_name = serializers.CharField(source="user.display_name", read_only=True)
+    user_email = serializers.CharField(source="user.email", read_only=True)
+    user_phone = serializers.CharField(source="user.phone_number", read_only=True, allow_null=True)
+    package_id = serializers.UUIDField(source="package.id", read_only=True)
+    package_name = serializers.CharField(source="package.name", read_only=True)
+    token_amount = serializers.DecimalField(
+        source="package.token_amount", max_digits=20, decimal_places=0, read_only=True
+    )
+    price_amount = serializers.DecimalField(
+        source="package.price_amount", max_digits=12, decimal_places=2, read_only=True
+    )
+    currency = serializers.CharField(source="package.currency", read_only=True)
+
+    class Meta:
+        model = PurchaseRequest
+        fields = [
+            "id",
+            "user_id",
+            "user_name",
+            "user_email",
+            "user_phone",
+            "package_id",
+            "package_name",
+            "token_amount",
+            "price_amount",
+            "currency",
+            "payment_reference",
+            "provider",
+            "claimed_amount",
+            "status",
+            "review_reason",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
 class PurchaseRequestSerializer(serializers.ModelSerializer):
     package_id = serializers.UUIDField(source="package.id", read_only=True)
     package_name = serializers.CharField(source="package.name", read_only=True)

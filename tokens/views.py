@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db import models
+from django.db.models import Case, IntegerField, When
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.pagination import PageNumberPagination
@@ -21,6 +22,7 @@ from .models import (
     TokenWallet,
 )
 from .serializers import (
+    AdminPurchaseRequestSerializer,
     AdminRedemptionRequestSerializer,
     PurchaseRequestSerializer,
     RedemptionRequestSerializer,
@@ -605,6 +607,35 @@ def _notify_staff_of_purchase(purchase_request):
     except Exception:
         logger = __import__("logging").getLogger(__name__)
         logger.exception("Failed to notify staff of purchase %s", purchase_request.id)
+
+
+class AdminPurchaseListView(APIView):
+    """
+    GET /api/tokens/admin/purchases/?status=&page=   (staff only)
+
+    Lists student token purchase requests. Pending requests are returned first.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        qs = (
+            PurchaseRequest.objects.select_related("user", "package")
+            .annotate(
+                status_rank=Case(
+                    When(status="pending", then=0),
+                    default=1,
+                    output_field=IntegerField(),
+                )
+            )
+            .order_by("status_rank", "-created_at")
+        )
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(qs, request)
+        data = AdminPurchaseRequestSerializer(page if page is not None else qs, many=True).data
+        return paginator.get_paginated_response(data)
 
 
 class AdminPurchaseReviewView(APIView):
