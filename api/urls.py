@@ -171,10 +171,10 @@ urlpatterns = [
     
     # Stories & Community
     path('community/stories/', community.story_list, name='community-stories'),
-    path('community/stories/<slug:share_code>/', community.story_detail, name='community-story-detail'),
-    path('community/stories/<slug:share_code>/responses/', community.story_responses, name='community-story-responses'),
-    path('community/stories/<slug:share_code>/appreciate/', community.story_appreciate, name='community-story-appreciate'),
-    path('community/stories/<slug:share_code>/report/', community.story_report, name='community-story-report'),
+    path('community/stories/<str:share_code>/', community.story_detail, name='community-story-detail'),
+    path('community/stories/<str:share_code>/responses/', community.story_responses, name='community-story-responses'),
+    path('community/stories/<str:share_code>/appreciate/', community.story_appreciate, name='community-story-appreciate'),
+    path('community/stories/<str:share_code>/report/', community.story_report, name='community-story-report'),
 
     # Slide endpoints
     path('slides/', views.slide_list, name='slide-list'),

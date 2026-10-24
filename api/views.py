@@ -3740,7 +3740,7 @@ def article_share(request, article_id):
         token_service.reward(
             request.user,
             "ARTICLE_SHARE_REWARD",
-            reference_key=f"article_share:{request.user.pk}:{article.id}",
+            reference_key=token_service.daily_reference(request.user, "article_share"),
             description=f"Reward for sharing article: {article.title}",
             content_object=article,
             initiated_by="api",

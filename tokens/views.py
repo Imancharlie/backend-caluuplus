@@ -286,6 +286,25 @@ class PurchaseView(APIView):
         return Response(PurchaseRequestSerializer(purchase_request).data, status=status.HTTP_201_CREATED)
 
 
+class MyPurchasesView(APIView):
+    """
+    GET /api/tokens/purchases/
+    Lists the current user's purchase requests (pending, approved, rejected).
+    """
+    permission_classes = [TokensPermission]
+
+    def get(self, request):
+        qs = (
+            PurchaseRequest.objects.filter(user=request.user)
+            .select_related("package")
+            .order_by("-created_at")
+        )
+        return Response(
+            {"results": PurchaseRequestSerializer(qs, many=True).data},
+            status=status.HTTP_200_OK,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Redemption
 # ---------------------------------------------------------------------------

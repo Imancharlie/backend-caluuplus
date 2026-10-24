@@ -645,7 +645,7 @@ def story_list(request):
         token_service.reward(
             request.user,
             "STORY_SHARE",
-            reference_key=f"story_share:{story.pk}",
+            reference_key=token_service.daily_reference(request.user, "story_share"),
             description="Reward for sharing a story",
             content_object=story,
             initiated_by="community",

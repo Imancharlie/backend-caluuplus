@@ -11,6 +11,7 @@ urlpatterns = [
     path("survey-reward/", views.SurveyRewardView.as_view(), name="token-survey-reward"),
     path("packages/", views.PackageListView.as_view(), name="token-packages"),
     path("purchase/", views.PurchaseView.as_view(), name="token-purchase"),
+    path("purchases/", views.MyPurchasesView.as_view(), name="token-my-purchases"),
     path("redemptions/", views.RedemptionCreateView.as_view(), name="token-redemption-create"),
     path("redemptions/<uuid:pk>/", views.RedemptionStatusView.as_view(), name="token-redemption-status"),
     path("redemptions/<uuid:pk>/cancel/", views.RedemptionCancelView.as_view(), name="token-redemption-cancel"),

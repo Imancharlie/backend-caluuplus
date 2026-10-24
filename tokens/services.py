@@ -57,6 +57,17 @@ REFERRAL_REQUIRED_STATE_KEY = "REFERRAL_REQUIRED_STATE"
 REDEEM_CONFIG_KEY = "REDEMPTION"
 
 
+def daily_reference(user, prefix: str) -> str:
+    """
+    Stable once-per-user-per-local-day reference key.
+
+    Used for share rewards so a second story/opportunity/article share the same
+    day still succeeds but does not grant another payout.
+    """
+    day = timezone.localdate().isoformat()
+    return f"{prefix}:daily:{user.pk}:{day}"
+
+
 class TokenError(Exception):
     """Base error for token operations."""
 

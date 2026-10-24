@@ -382,14 +382,6 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                 intent_info=intent_info,
             )
 
-            # Add upcoming events alert naturally
-            try:
-                upcoming_alert = enhanced_service.get_upcoming_events_alert(request.user)
-                if upcoming_alert:
-                    ai_response.text = f"{ai_response.text}\n\n{upcoming_alert}"
-            except Exception as e:
-                logger.debug(f"Failed to add upcoming events alert: {e}")
-
             # Update analytics (separate, best-effort)
             try:
                 from .models import ConversationAnalytics
@@ -683,14 +675,6 @@ class ChatbotViewSet(viewsets.ModelViewSet):
                         billable_reply = bool(event.get("billable"))
                         response_complete = billable_reply
                         run_learning_capture("model_finished")
-
-                # Add upcoming events alert naturally
-                try:
-                    upcoming_alert = enhanced_service.get_upcoming_events_alert(request.user)
-                    if upcoming_alert:
-                        full_text = f"{full_text}\n\n{upcoming_alert}"
-                except Exception as e:
-                    logger.debug(f"Failed to add upcoming events alert in stream: {e}")
 
                 # Save message (short transaction)
                 with transaction.atomic():

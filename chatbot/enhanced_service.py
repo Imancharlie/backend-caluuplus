@@ -857,66 +857,6 @@ class EnhancedClaudeService:
             logger.error(f"Error searching calendar events: {e}")
             return ""
 
-    def get_upcoming_events_alert(self, user) -> str:
-        """Get natural alert for upcoming events (1-2 days away)."""
-        try:
-            from academia.models import AcademicEvent, AcademicCalendar
-            from django.utils import timezone
-            from datetime import timedelta
-
-            cache_key = f"upcoming_events:{user.id}"
-            cached = safe_cache_get(cache_key)
-            if cached is not None:
-                return cached
-
-            student = getattr(user, "student_profile", None)
-            if not student:
-                safe_cache_set(cache_key, "", timeout=60)
-                return ""
-
-            university_id = student.university_id
-            now = timezone.now()
-            tomorrow = now + timedelta(days=1)
-            day_after = now + timedelta(days=2)
-
-            # Get events in the next 1-2 days
-            upcoming_events = AcademicEvent.objects.filter(
-                is_active=True,
-                calendar__university_id=university_id,
-                calendar__is_active=True,
-                start_date__gte=now.date(),
-                start_date__lte=day_after.date()
-            ).order_by('start_date')[:3]
-
-            if not upcoming_events:
-                safe_cache_set(cache_key, "", timeout=60)
-                return ""
-
-            # Format natural alert
-            alerts = []
-            for event in upcoming_events:
-                days_until = (event.start_date - now.date()).days
-                if days_until == 0:
-                    time_str = "today"
-                elif days_until == 1:
-                    time_str = "tomorrow"
-                else:
-                    time_str = f"in {days_until} days"
-
-                alerts.append(f"{event.title} is {time_str}")
-
-            if alerts:
-                result = f"btw, heads up — {' and '.join(alerts)}."
-                safe_cache_set(cache_key, result, timeout=60)
-                return result
-
-            safe_cache_set(cache_key, "", timeout=60)
-            return ""
-
-        except Exception as e:
-            logger.error(f"Error getting upcoming events alert: {e}")
-            return ""
-
     def _format_recent_messages(self, messages) -> str:
         """Format last few messages for context - optimized to reduce tokens"""
         if not messages:
@@ -1630,8 +1570,15 @@ IMPORTANT: Reply with ONLY your conversational answer. No JSON, no metadata, no 
             for event in upcoming:
                 # Include all important event types
                 if event.event_type in ['holiday', 'break', 'examination', 'registration', 'orientation', 'academic']:
-                    event_names.append(f"{event.title} ({event.start_date})")
-            
+                    days_until = (event.start_date - today).days
+                    if days_until == 0:
+                        urgency = f"{event.start_date}, TODAY"
+                    elif days_until == 1:
+                        urgency = f"{event.start_date}, TOMORROW"
+                    else:
+                        urgency = str(event.start_date)
+                    event_names.append(f"{event.title} ({urgency})")
+
             if event_names:
                 return ", ".join(event_names)
         except Exception as e:

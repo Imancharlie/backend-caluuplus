@@ -120,7 +120,9 @@ class OpportunityViewSet(viewsets.ModelViewSet):
             token_service.reward(
                 opportunity.created_by,
                 "OPPORTUNITY_SHARE",
-                reference_key=f"opportunity_share:{opportunity.id}",
+                reference_key=token_service.daily_reference(
+                    opportunity.created_by, "opportunity_share"
+                ),
                 description=f"Reward for sharing opportunity: {opportunity.title}",
                 content_object=opportunity,
                 initiated_by="opportunities",
