@@ -430,10 +430,35 @@ class TokenAPITest(TestCase):
         hist = self.client.get("/api/tokens/history/")
         self.assertEqual(hist.status_code, 200)
         self.assertEqual(hist.data["results"][0]["transaction_type"], "PROFILE_COMPLETION")
+
+        RewardRule.objects.update_or_create(
+            key="STORY_SHARE", defaults={"label": "Story Shared", "amount": 10, "is_active": True}
+        )
+        RewardRule.objects.update_or_create(
+            key="OPPORTUNITY_SHARE",
+            defaults={"label": "Opportunity Shared", "amount": 25, "is_active": True},
+        )
+        RewardRule.objects.update_or_create(
+            key="ARTICLE_SHARE_REWARD",
+            defaults={"label": "Article Share Reward", "amount": 70, "is_active": True},
+        )
+        RewardRule.objects.update_or_create(
+            key="COURSE_CONTRIBUTION",
+            defaults={"label": "Course Contribution", "amount": 5, "is_active": True},
+        )
+        RewardRule.objects.update_or_create(
+            key="SIGNUP_BONUS",
+            defaults={"label": "New Account Welcome", "amount": 100, "is_active": True},
+        )
         rewards = self.client.get("/api/tokens/rewards/")
         self.assertEqual(rewards.status_code, 200)
-        rk = {r["key"] for r in rewards.data["rewards"]}
-        self.assertIn("PROFILE_COMPLETION", rk)
+        keys = [r["key"] for r in rewards.data["rewards"]]
+        self.assertEqual(
+            keys,
+            ["STORY_SHARE", "OPPORTUNITY_SHARE", "ARTICLE_SHARE_REWARD", "COURSE_CONTRIBUTION"],
+        )
+        self.assertNotIn("SIGNUP_BONUS", keys)
+        self.assertTrue(all(r.get("description", "") == "" for r in rewards.data["rewards"]))
 
     def test_redemption_endpoint(self):
         RewardRule.objects.filter(key="PROFILE_COMPLETION").update(amount=500)

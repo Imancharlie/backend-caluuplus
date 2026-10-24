@@ -104,6 +104,16 @@ class TransactionDetailView(APIView):
         return Response(TokenTransactionSerializer(txn).data)
 
 
+# Student-facing How to Earn catalog. Signup bonus and admin-only rules stay
+# out of this list; order is intentional for the earn modal.
+STUDENT_EARN_REWARD_KEYS = (
+    "STORY_SHARE",
+    "OPPORTUNITY_SHARE",
+    "ARTICLE_SHARE_REWARD",
+    "COURSE_CONTRIBUTION",
+)
+
+
 class AvailableRewardsView(APIView):
     """
     GET /api/tokens/rewards/
@@ -112,10 +122,21 @@ class AvailableRewardsView(APIView):
     permission_classes = [TokensPermission]
 
     def get(self, request):
-        rules = RewardRule.objects.filter(is_active=True).order_by("key")
+        by_key = {
+            r.key: r
+            for r in RewardRule.objects.filter(
+                is_active=True, key__in=STUDENT_EARN_REWARD_KEYS
+            )
+        }
         data = [
-            {"key": r.key, "label": r.label, "amount": int(r.amount), "description": r.description}
-            for r in rules
+            {
+                "key": key,
+                "label": by_key[key].label,
+                "amount": int(by_key[key].amount),
+                "description": "",
+            }
+            for key in STUDENT_EARN_REWARD_KEYS
+            if key in by_key
         ]
         return Response({"rewards": data})
 
